@@ -1,11 +1,19 @@
-# SSE-based MCP Server for Code Memory Management
+# MCP Server with Mem0 for Code Memory Management
 
-This demonstrates a working pattern for SSE-based MCP servers that provide code memory management tools using [Mem0](https://mem0.ai) and [MCP](https://modelcontextprotocol.io/introduction).
+This demonstrates a structured approach for using an [MCP](https://modelcontextprotocol.io/introduction) server with [mem0](https://mem0.ai) to manage code memory efficiently. The server can be used with Cursor and provides essential tools for storing, retrieving, and searching code snippets.
 
 ## Installation
 
 1. Clone this repository
-2. Install the dependencies using `uv`:
+2. Initialize the `uv` environment:
+```bash
+uv venv
+```
+3. Activate the virtual environment:
+```bash
+source .env/bin/activate
+```
+4. Install the dependencies using `uv`:
 ```bash
 # Install in editable mode from pyproject.toml
 uv pip install -e .
@@ -14,8 +22,7 @@ OR
 
 uv pip install httpx "mcp[cli]" mem0ai
 ```
-
-3. Update `.env` file in the root directory with your mem0 API key:
+5. Update `.env` file in the root directory with your mem0 API key:
 ```bash
 MEM0_API_KEY=your_api_key_here
 ```
@@ -27,7 +34,7 @@ MEM0_API_KEY=your_api_key_here
 uv run main.py
 ```
 
-2. In Cursor, connect to the SSE endpoint:
+2. In Cursor, connect to the SSE endpoint, follow this [doc](https://docs.cursor.com/context/model-context-protocol) for reference:
 ```
 http://0.0.0.0:8080/sse
 ```

@@ -37,6 +37,10 @@ http://0.0.0.0:8080/sse
 
 3. Open the Composer in Cursor and switch to `Agent` mode.
 
+## Demo with Cusor
+
+https://github.com/user-attachments/assets/56670550-fb11-4850-9905-692d3496231c
+
 ## Features
 
 The server provides three main tools for code memory management:

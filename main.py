@@ -18,7 +18,7 @@ mcp = FastMCP("mem0-mcp")
 mem0_client = MemoryClient()
 DEFAULT_USER_ID = "cursor_mcp"
 CUSTOM_INSTRUCTIONS = """
-Store the Following Information:  
+Extract the Following Information:  
 
 - Code Snippets: Save the actual code for future reference.  
 - Explanation: Document a clear description of what the code does and how it works.

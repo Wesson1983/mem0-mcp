@@ -54,7 +54,7 @@ https://github.com/user-attachments/assets/56670550-fb11-4850-9905-692d3496231c
 
 The server provides three main tools for managing code preferences:
 
-1. `add_code_memory`: Store code snippets, implementation details, and coding patterns with comprehensive context including:
+1. `add_coding_preference`: Store code snippets, implementation details, and coding patterns with comprehensive context including:
    - Complete code with dependencies
    - Language/framework versions
    - Setup instructions
@@ -62,9 +62,9 @@ The server provides three main tools for managing code preferences:
    - Example usage
    - Best practices
 
-2. `get_all_code_memory`: Retrieve all stored code memories to analyze patterns, review implementations, and ensure no relevant information is missed.
+2. `get_all_coding_preferences`: Retrieve all stored coding preferences to analyze patterns, review implementations, and ensure no relevant information is missed.
 
-3. `search_code_memory`: Semantically search through stored memories to find relevant:
+3. `search_coding_preferences`: Semantically search through stored coding preferences to find relevant:
    - Code implementations
    - Programming solutions
    - Best practices

@@ -17,6 +17,15 @@ mcp = FastMCP("mem0-mcp")
 # Initialize mem0 client and set default user
 mem0_client = MemoryClient()
 DEFAULT_USER_ID = "cursor_mcp"
+CUSTOM_INSTRUCTIONS = """
+Store the Following Information:  
+
+- Code Snippets: Save the actual code for future reference.  
+- Explanation: Document a clear description of what the code does and how it works.
+- Related Technical Details: Include information about the programming language, dependencies, and system specifications.  
+- Key Features: Highlight the main functionalities and important aspects of the snippet.
+"""
+mem0_client.update_project(custom_instructions=CUSTOM_INSTRUCTIONS)
 
 @mcp.tool(
     description="""Add a new code memory to mem0. This tool stores code snippets, implementation details,

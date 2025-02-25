@@ -11,16 +11,12 @@ uv venv
 ```
 3. Activate the virtual environment:
 ```bash
-source .env/bin/activate
+source .venv/bin/activate
 ```
 4. Install the dependencies using `uv`:
 ```bash
 # Install in editable mode from pyproject.toml
 uv pip install -e .
-
-OR
-
-uv pip install httpx "mcp[cli]" mem0ai
 ```
 5. Update `.env` file in the root directory with your mem0 API key:
 ```bash
@@ -38,6 +34,8 @@ uv run main.py
 ```
 http://0.0.0.0:8080/sse
 ```
+
+3. Open the Composer in Cursor and switch to `Agent` mode.
 
 ## Features
 

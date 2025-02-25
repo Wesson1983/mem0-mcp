@@ -37,7 +37,7 @@ http://0.0.0.0:8080/sse
 
 3. Open the Composer in Cursor and switch to `Agent` mode.
 
-## Demo with Cusor
+## Demo with Cursor
 
 https://github.com/user-attachments/assets/56670550-fb11-4850-9905-692d3496231c
 

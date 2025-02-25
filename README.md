@@ -1,6 +1,6 @@
 # SSE-based MCP Server for Code Memory Management
 
-This demonstrates a working pattern for SSE-based MCP servers that provide code memory management tools using [mem0](https://mem0.ai) and [MCP](https://modelcontextprotocol.io/introduction).
+This demonstrates a working pattern for SSE-based MCP servers that provide code memory management tools using [Mem0](https://mem0.ai) and [MCP](https://modelcontextprotocol.io/introduction).
 
 ## Installation
 

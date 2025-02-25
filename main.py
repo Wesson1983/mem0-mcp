@@ -28,7 +28,7 @@ Extract the Following Information:
 mem0_client.update_project(custom_instructions=CUSTOM_INSTRUCTIONS)
 
 @mcp.tool(
-    description="""Add a new code memory to mem0. This tool stores code snippets, implementation details,
+    description="""Add a new coding preference to mem0. This tool stores code snippets, implementation details,
     and coding patterns for future reference. Store every code snippet. When storing code, you should include:
     - Complete code with all necessary imports and dependencies
     - Language/framework version information (e.g., "Python 3.9", "React 18")
@@ -40,10 +40,10 @@ mem0_client.update_project(custom_instructions=CUSTOM_INSTRUCTIONS)
     - Links to relevant documentation or resources
     - Environment setup requirements (if applicable)
     - Error handling and debugging tips
-    The memory will be indexed for semantic search and can be retrieved later using natural language queries."""
+    The preference will be indexed for semantic search and can be retrieved later using natural language queries."""
 )
-async def add_code_memory(text: str) -> str:
-    """Add a new code memory to mem0.
+async def add_coding_preference(text: str) -> str:
+    """Add a new coding preference to mem0.
 
     This tool is designed to store code snippets, implementation patterns, and programming knowledge.
     When storing code, it's recommended to include:
@@ -59,13 +59,13 @@ async def add_code_memory(text: str) -> str:
     try:
         messages = [{"role": "user", "content": text}]
         mem0_client.add(messages, user_id=DEFAULT_USER_ID, output_format="v1.1")
-        return f"Successfully added memory: {text}"
+        return f"Successfully added preference: {text}"
     except Exception as e:
-        return f"Error adding memory: {str(e)}"
+        return f"Error adding preference: {str(e)}"
 
 @mcp.tool(
-    description="""Retrieve all stored code memories for the default user. Call this tool when you need 
-    complete context of all previously stored memories. This is useful when:
+    description="""Retrieve all stored coding preferences for the default user. Call this tool when you need 
+    complete context of all previously stored preferences. This is useful when:
     - You need to analyze all available code patterns
     - You want to check all stored implementation examples
     - You need to review the full history of stored solutions
@@ -77,25 +77,25 @@ async def add_code_memory(text: str) -> str:
     - Setup and configuration guides
     Results are returned in JSON format with metadata."""
 )
-async def get_all_code_memory() -> str:
-    """Get all code memories for the default user.
+async def get_all_coding_preferences() -> str:
+    """Get all coding preferences for the default user.
 
-    Returns a JSON formatted list of all stored memories, including:
+    Returns a JSON formatted list of all stored preferences, including:
     - Code implementations and patterns
     - Technical documentation
     - Programming best practices
     - Setup guides and examples
-    Each memory includes metadata about when it was created and its content type.
+    Each preference includes metadata about when it was created and its content type.
     """
     try:
         memories = mem0_client.get_all(user_id=DEFAULT_USER_ID, page=1, page_size=50)
         flattened_memories = [memory["memory"] for memory in memories["results"]]
         return json.dumps(flattened_memories, indent=2)
     except Exception as e:
-        return f"Error getting memories: {str(e)}"
+        return f"Error getting preferences: {str(e)}"
 
 @mcp.tool(
-    description="""Search through stored code memories using semantic search. This tool should be called 
+    description="""Search through stored coding preferences using semantic search. This tool should be called 
     for EVERY user query to find relevant code and implementation details. It helps find:
     - Specific code implementations or patterns
     - Solutions to programming problems
@@ -103,11 +103,11 @@ async def get_all_code_memory() -> str:
     - Setup and configuration guides
     - Technical documentation and examples
     The search uses natural language understanding to find relevant matches, so you can
-    describe what you're looking for in plain English. Always search the memory before 
+    describe what you're looking for in plain English. Always search the preferences before 
     providing answers to ensure you leverage existing knowledge."""
 )
-async def search_code_memory(query: str) -> str:
-    """Search code memories using semantic search.
+async def search_coding_preferences(query: str) -> str:
+    """Search coding preferences using semantic search.
 
     The search is powered by natural language understanding, allowing you to find:
     - Code implementations and patterns
@@ -125,7 +125,7 @@ async def search_code_memory(query: str) -> str:
         flattened_memories = [memory["memory"] for memory in memories["results"]]
         return json.dumps(flattened_memories, indent=2)
     except Exception as e:
-        return f"Error searching memories: {str(e)}"
+        return f"Error searching preferences: {str(e)}"
 
 def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlette:
     """Create a Starlette application that can server the provied mcp server with SSE."""

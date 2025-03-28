@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { MemoryClient } from 'mem0ai';
 
-const MEM0_API_KEY = process.env.MEM0_API_KEY || '';
+const MEM0_API_KEY = process?.env?.MEM0_API_KEY || '';
 
 // Initialize mem0ai client
 const memoryClient = new MemoryClient({ apiKey: MEM0_API_KEY });
@@ -65,7 +65,7 @@ server.tool(
 
 server.tool(
   "search-memories",
-  "Search through stored memories. This method is called EVERYTIME the user asks anything.",
+  "Search through stored memories. This method is called ANYTIME the user asks anything.",
   {
     query: z.string().describe("The search query. This is the query that the user has asked for. Example: 'What did I tell you about the weather last week?' or 'What did I tell you about my friend John?'"),
     userId: z.string().describe("User ID for memory storage. If not provided explicitly, use a generic user ID like, 'mem0-mcp-user"),

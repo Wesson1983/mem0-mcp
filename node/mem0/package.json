@@ -1,6 +1,6 @@
 {
-  "name": "saket-mcp",
-  "version": "1.0.6",
+  "name": "@mem0/mcp",
+  "version": "0.0.1",
   "main": "index.js",
   "type": "module",
   "bin": {
@@ -38,6 +38,5 @@
   "devDependencies": {
     "@types/node": "^22.13.13",
     "typescript": "^5.8.2"
-  },
-  "packageManager": "pnpm@10.9.0+sha512.0486e394640d3c1fb3c9d43d49cf92879ff74f8516959c235308f5a8f62e2e19528a65cdc2a3058f587cde71eba3d5b56327c8c33a97e4c4051ca48a10ca2d5f"
+  }
 }

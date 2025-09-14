@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { MemoryClient } from 'mem0ai';
+import { MemoryClient, Message } from 'mem0ai';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 
@@ -49,11 +49,10 @@ export default function createServer({
     async ({ content, userId }) => {
       const resolvedUserId = userId || defaultUserId;
       try {
-        const messages = [
-          { role: 'system', content: 'Memory storage system' },
-          { role: 'user', content },
+        const messages: Message[] = [
+          { role: 'user', content: content }
         ];
-        await memoryClient.add(messages, { user_id: resolvedUserId });
+        memoryClient.add(messages, { user_id: resolvedUserId, async_mode: true, version: "v2", output_format: "v1.1" });
         return {
           content: [
             {

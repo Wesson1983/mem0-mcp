@@ -1,0 +1,2 @@
+runtime: typescript
+entry: src/index.ts

@@ -1,119 +1,58 @@
-#!/usr/bin/env node
-
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  Tool,
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
-import { MemoryClient } from 'mem0ai';
+import { MemoryClient, Message } from 'mem0ai';
 import dotenv from 'dotenv';
+import { z } from 'zod';
 
 dotenv.config();
 
-const MEM0_API_KEY = process?.env?.MEM0_API_KEY || '';
+// Session configuration schema (used by Smithery CLI for HTTP/StreamableHTTP)
+export const configSchema = z.object({
+  mem0ApiKey: z
+    .string()
+    .optional()
+    .describe('Mem0 API key. Defaults to MEM0_API_KEY env var if not provided.'),
+  defaultUserId: z
+    .string()
+    .optional()
+    .default('mem0-mcp-user')
+    .describe("Default user ID when not provided in tool input"),
+});
 
-// Initialize mem0ai client
-const memoryClient = new MemoryClient({ apiKey: MEM0_API_KEY });
+// Factory to create the MCP server. Smithery CLI will call this for HTTP transport.
+export default function createServer({
+  config,
+}: {
+  config: z.infer<typeof configSchema>;
+}) {
+  const apiKey = config.mem0ApiKey || process?.env?.MEM0_API_KEY || '';
+  const defaultUserId = config.defaultUserId || 'mem0-mcp-user';
 
-// Tool definitions
-const ADD_MEMORY_TOOL: Tool = {
-  name: 'add-memory',
-  description:
-    'Add a new memory. This method is called everytime the user informs anything about themselves, their preferences, or anything that has any relevent information whcih can be useful in the future conversation. This can also be called when the user asks you to remember something.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      content: {
-        type: 'string',
-        description: 'The content to store in memory',
-      },
-      userId: {
-        type: 'string',
-        description: "User ID for memory storage. If not provided explicitly, use a generic user ID like, 'mem0-mcp-user'",
-      },
-    },
-    required: ['content', 'userId'],
-  },
-};
+  const memoryClient = new MemoryClient({ apiKey });
 
-const SEARCH_MEMORIES_TOOL: Tool = {
-  name: 'search-memories',
-  description: 'Search through stored memories. This method is called ANYTIME the user asks anything.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      query: {
-        type: 'string',
-        description: "The search query. This is the query that the user has asked for. Example: 'What did I tell you about the weather last week?' or 'What did I tell you about my friend John?'",
-      },
-      userId: {
-        type: 'string',
-        description: "User ID for memory storage. If not provided explicitly, use a generic user ID like, 'mem0-mcp-user'",
-      },
-    },
-    required: ['query', 'userId'],
-  },
-};
-
-// Create server instance
-const server = new Server(
-  {
+  const server = new McpServer({
     name: 'mem0-mcp',
     version: '0.0.1',
-  },
-  {
-    capabilities: {
-      tools: {},
-      logging: {},
+  });
+
+  // add-memory tool
+  server.tool(
+    'add-memory',
+    'Add a new memory about the user. Call this whenever the user shares preferences, facts about themselves, or explicitly asks you to remember something.',
+    {
+      content: z.string().describe('The content to store in memory'),
+      userId: z
+        .string()
+        .optional()
+        .describe("User ID for memory storage. If omitted, uses config.defaultUserId."),
     },
-  }
-);
-
-// Helper function to add memories
-async function addMemory(content: string, userId: string) {
-  try {
-    const messages = [
-      { role: 'system', content: 'Memory storage system' },
-      { role: 'user', content }
-    ];
-    await memoryClient.add(messages, { user_id: userId });
-    return true;
-  } catch (error) {
-    console.error('Error adding memory:', error);
-    return false;
-  }
-}
-
-// Helper function to search memories
-async function searchMemories(query: string, userId: string) {
-  try {
-    const results = await memoryClient.search(query, { user_id: userId });
-    return results;
-  } catch (error) {
-    console.error('Error searching memories:', error);
-    return [];
-  }
-}
-
-// Register tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [ADD_MEMORY_TOOL, SEARCH_MEMORIES_TOOL],
-}));
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  try {
-    const { name, arguments: args } = request.params;
-    
-    if (!args) {
-      throw new Error('No arguments provided');
-    }
-    
-    switch (name) {
-      case 'add-memory': {
-        const { content, userId } = args as { content: string, userId: string };
-        await addMemory(content, userId);
+    async ({ content, userId }) => {
+      const resolvedUserId = userId || defaultUserId;
+      try {
+        const messages: Message[] = [
+          { role: 'user', content: content }
+        ];
+        memoryClient.add(messages, { user_id: resolvedUserId, async_mode: true, version: "v2", output_format: "v1.1" });
         return {
           content: [
             {
@@ -121,17 +60,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: 'Memory added successfully',
             },
           ],
-          isError: false,
         };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Error adding memory: ' +
+                (error instanceof Error ? error.message : String(error)),
+            },
+          ],
+          isError: true,
+        } as const;
       }
-      
-      case 'search-memories': {
-        const { query, userId } = args as { query: string, userId: string };
-        const results = await searchMemories(query, userId);
-        const formattedResults = results.map((result: any) => 
-          `Memory: ${result.memory}\nRelevance: ${result.score}\n---`
-        ).join('\n');
-        
+    }
+  );
+
+  // search-memories tool
+  server.tool(
+    'search-memories',
+    'Search through stored memories. Call this whenever you need to recall prior information relevant to the user query.',
+    {
+      query: z
+        .string()
+        .describe(
+          "The search query, typically derived from the user's current question."
+        ),
+      userId: z
+        .string()
+        .optional()
+        .describe("User ID for memory storage. If omitted, uses config.defaultUserId."),
+    },
+    async ({ query, userId }) => {
+      const resolvedUserId = userId || defaultUserId;
+      try {
+        const results: any[] = await memoryClient.search(query, {
+          user_id: resolvedUserId,
+        });
+        const formattedResults = (results || [])
+          .map((result: any) => `Memory: ${result.memory}\nRelevance: ${result.score}\n---`)
+          .join('\n');
+
         return {
           content: [
             {
@@ -139,56 +109,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: formattedResults || 'No memories found',
             },
           ],
-          isError: false,
         };
-      }
-      
-      default:
+      } catch (error) {
         return {
           content: [
-            { type: 'text', text: `Unknown tool: ${name}` },
+            {
+              type: 'text',
+              text:
+                'Error searching memories: ' +
+                (error instanceof Error ? error.message : String(error)),
+            },
           ],
           isError: true,
-        };
+        } as const;
+      }
     }
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-});
+  );
 
-// Function to log safely
-function safeLog(
-  level: 'error' | 'debug' | 'info' | 'notice' | 'warning' | 'critical' | 'alert' | 'emergency',
-  data: any
-): void {
-  // For stdio transport, log to stderr to avoid protocol interference
-  console.error(`[${level}] ${typeof data === 'object' ? JSON.stringify(data) : data}`);
-  
-  // Send to logging capability if available
-  try {
-    server.sendLoggingMessage({ level, data });
-  } catch (error) {
-    // Ignore errors when logging is not available
-  }
+  return server.server;
 }
 
-// Server startup
+// Optional: keep STDIO compatibility for local usage
 async function main() {
   try {
-    console.error('Initializing Mem0 Memory MCP Server...');
-    
+    console.error('Initializing Mem0 Memory MCP Server (stdio mode)...');
+
+    const server = createServer({
+      config: {
+        mem0ApiKey: process?.env?.MEM0_API_KEY,
+        defaultUserId: process?.env?.DEFAULT_USER_ID || 'mem0-mcp-user',
+      },
+    });
+
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    
-    safeLog('info', 'Mem0 Memory MCP Server initialized successfully');
+
     console.error('Memory MCP Server running on stdio');
   } catch (error) {
     console.error('Fatal error running server:', error);
@@ -196,7 +151,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error('Fatal error in main():', error);
-  process.exit(1);
-});
+// Execute main when launched directly via node dist/index.js
+if (process.argv[1] && process.argv[1].includes('index.js')) {
+  // best-effort detection; avoids executing during smithery-cli runtime
+  main().catch((error) => {
+    console.error('Fatal error in main():', error);
+    process.exit(1);
+  });
+}

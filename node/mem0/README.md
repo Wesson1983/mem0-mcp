@@ -11,23 +11,43 @@ A Model Context Protocol (MCP) server that provides memory storage and retrieval
 - Automatic error handling
 - Support for multiple user contexts
 
-## Installation
+## Usage
 
-### Running with npx
+This server now supports StreamableHTTP via Smithery CLI while retaining optional STDIO compatibility.
+
+### StreamableHTTP (recommended)
+
+- Development (opens Smithery Playground and exposes HTTP transport):
 
 ```bash
-env MEM0_API_KEY=your-api-key-here npx -y @mem0/mcp
+npm run dev
 ```
 
-### Manual Installation
+- Build for HTTP/StreamableHTTP (Smithery):
 
 ```bash
-npm install -g @mem0/mcp
+npm run build
+```
+
+- Start the HTTP server locally (Smithery-built entrypoint):
+
+```bash
+npm run start:http
+```
+
+You can configure the server using Smithery’s generated form in the playground or by setting environment variables (e.g., `MEM0_API_KEY`).
+
+### STDIO (backward compatible)
+
+Run the server over STDIO (useful for local clients that only support STDIO):
+
+```bash
+env MEM0_API_KEY=your-api-key-here npm run build:stdio && npm run start:stdio
 ```
 
 ## Configuration for AI Tools
 
-### Running on Cursor
+### Running on Cursor (STDIO)
 
 #### Configuring Cursor 🖥️
 
@@ -39,7 +59,7 @@ To configure Mem0 MCP in Cursor:
 4. Enter the following:
    - Name: "mem0-mcp" (or your preferred name)
    - Type: "command"
-   - Command: `env MEM0_API_KEY=your-api-key-here npx -y @mem0/mcp`
+   - Command: `env MEM0_API_KEY=your-api-key-here npx -y @mem0/mcp` (or use `start:stdio` from this repo)
 
 To configure Mem0 MCP using JSON configuration:
 
@@ -57,7 +77,7 @@ To configure Mem0 MCP using JSON configuration:
 }
 ```
 
-### Running on VS Code
+### Running on VS Code (STDIO)
 
 Add the following JSON block to your User Settings (JSON) file in VS Code:
 
@@ -157,44 +177,35 @@ Search through stored memories to retrieve relevant information.
 
 ### Prerequisites
 
-- Node.js (v14 or higher)
+- Node.js >= 18
 - A Mem0 API key
 
 ### Setup
 
-1. Clone the repository
-2. Install dependencies:
+1. Install dependencies:
+
 ```bash
 npm install
 ```
 
-3. Create a `.env` file in the root directory and add your Mem0 API key:
+2. Optionally create a `.env` file in the project directory and add your Mem0 API key:
+
 ```bash
 MEM0_API_KEY=your-api-key-here
+DEFAULT_USER_ID=mem0-mcp-user
 ```
 
-### Running Development Server
-
-To run the server in development mode:
+### HTTP/StreamableHTTP Dev
 
 ```bash
 npm run dev
 ```
 
-### Building
-
-To build the project:
+### STDIO Dev
 
 ```bash
-npm run build
-```
-
-### Starting the Server
-
-To start the server after building:
-
-```bash
-npm start
+npm run build:stdio
+npm run start:stdio
 ```
 
 ## Error Handling

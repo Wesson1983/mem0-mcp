@@ -132,11 +132,6 @@ export default function createServer({
 
 // Optional: keep STDIO compatibility for local usage
 async function main() {
-  // Only run when executed directly, not when imported by Smithery CLI
-  if (import.meta.url && process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
-    // no-op; import.meta.url in ESM is a file:// URL; comparison may not work reliably
-  }
-
   try {
     console.error('Initializing Mem0 Memory MCP Server (stdio mode)...');
 

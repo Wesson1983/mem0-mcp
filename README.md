@@ -1,5 +1,22 @@
 # Mem0 MCP Server
 
+> **This repository has been deprecated.** Mem0 now offers an official cloud-hosted MCP server that replaces this package. Please use the cloud version instead.
+>
+> **Docs:** [https://docs.mem0.ai/platform/mem0-mcp](https://docs.mem0.ai/platform/mem0-mcp)
+>
+> **Quick install across all major clients:**
+> ```bash
+> npx mcp-add \
+>   --name mem0-mcp \
+>   --type http \
+>   --url "https://mcp.mem0.ai/mcp" \
+>   --clients "claude,claude code,cursor,windsurf,vscode,opencode"
+> ```
+>
+> This repo will be archived shortly. No further updates will be made here.
+
+---
+
 [![PyPI version](https://img.shields.io/pypi/v/mem0-mcp-server.svg)](https://pypi.org/project/mem0-mcp-server/) [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE) [![smithery badge](https://smithery.ai/badge/@mem0ai/mem0-memory-mcp)](https://smithery.ai/server/@mem0ai/mem0-memory-mcp)
 
 `mem0-mcp-server` wraps the official [Mem0](https://mem0.ai) Memory API as a Model Context Protocol (MCP) server so any MCP-compatible client (Claude Desktop, Cursor, custom agents) can add, search, update, and delete long-term memories.

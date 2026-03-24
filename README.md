@@ -1,3 +1,21 @@
+> [!CAUTION]
+> ## This project has been archived
+>
+> **mem0-mcp-server** is no longer actively maintained and this repository is now a public archive.
+>
+> Thank you to the 640+ stargazers, 140+ forkers, and every contributor who helped shape this project. Your support and feedback meant the world to us.
+>
+> **Looking for Mem0 MCP?** We now offer an official cloud-hosted MCP server. Check out the [docs](https://docs.mem0.ai/platform/mem0-mcp) to get started.
+>
+> **Quick install across all major clients:**
+> ```bash
+> npx mcp-add \
+>   --name mem0-mcp \
+>   --type http \
+>   --url "https://mcp.mem0.ai/mcp" \
+>   --clients "claude,claude code,cursor,windsurf,vscode,opencode"
+> ```
+
 # Mem0 MCP Server
 
 [![PyPI version](https://img.shields.io/pypi/v/mem0-mcp-server.svg)](https://pypi.org/project/mem0-mcp-server/) [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE) [![smithery badge](https://smithery.ai/badge/@mem0ai/mem0-memory-mcp)](https://smithery.ai/server/@mem0ai/mem0-memory-mcp)

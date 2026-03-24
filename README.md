@@ -3,6 +3,8 @@
 >
 > **mem0-mcp-server** is no longer actively maintained and this repository is now a public archive.
 >
+> Thank you to the 640+ stargazers, 140+ forkers, and every contributor who helped shape this project. Your support and feedback meant the world to us.
+>
 > **Looking for Mem0 MCP?** We now offer an official cloud-hosted MCP server. Check out the [docs](https://docs.mem0.ai/platform/mem0-mcp) to get started.
 >
 > **Quick install across all major clients:**
@@ -13,8 +15,6 @@
 >   --url "https://mcp.mem0.ai/mcp" \
 >   --clients "claude,claude code,cursor,windsurf,vscode,opencode"
 > ```
->
-> You're welcome to fork this repo and build on it — the Apache 2.0 license still applies.
 
 # Mem0 MCP Server
 

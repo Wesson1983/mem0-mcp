@@ -1,6 +1,6 @@
 # Mem0 MCP Server
 
-> **This repository has been deprecated.** Mem0 now offers an official cloud-hosted MCP server that replaces this package. Please use the cloud version instead.
+> **This repository has been archived.** Mem0 now offers an official cloud-hosted MCP server that replaces this package. Please use the cloud version instead.
 >
 > **Docs:** [https://docs.mem0.ai/platform/mem0-mcp](https://docs.mem0.ai/platform/mem0-mcp)
 >
@@ -12,8 +12,6 @@
 >   --url "https://mcp.mem0.ai/mcp" \
 >   --clients "claude,claude code,cursor,windsurf,vscode,opencode"
 > ```
->
-> This repo will be archived shortly. No further updates will be made here.
 
 ---
 

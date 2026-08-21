@@ -1,0 +1,21 @@
+# Secrets — never commit real credentials
+.env.local
+.env.*.local
+
+# Devin CLI local (gitignored) MCP config
+.devin/mcp_config.local.json
+.devin/config.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

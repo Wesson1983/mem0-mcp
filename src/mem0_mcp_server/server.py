@@ -1,20 +1,29 @@
-"""MCP server that exposes Mem0 REST endpoints as MCP tools."""
+"""MCP server that exposes the Mem0 OSS REST API as MCP tools.
+
+This edition talks directly to a self-hosted mem0 OSS REST server
+(https://github.com/mem0ai/mem0/tree/main/server) using bare paths
+(/memories, /search, /entities) and X-API-Key auth. The upstream
+mem0 Python MemoryClient is NOT used because it hardcodes /v1/...
+cloud paths that do not exist on the OSS server (mem0 issue #4777).
+"""
 
 from __future__ import annotations
 
-import json
+import hashlib
 import logging
 import os
-from typing import Annotated, Any, Callable, Dict, Optional, TypeVar
+import re
+import urllib.parse
+from importlib.metadata import PackageNotFoundError, version
+from typing import Annotated, Any, Callable, Optional, TypeVar
 
+import requests
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from mem0 import MemoryClient
-from mem0.exceptions import MemoryError
-from pydantic import Field
+from pydantic import Field, ValidationError
 
-try:  # Support both package (`python -m mem0_mcp.server`) and script (`python mem0_mcp/server.py`) runs.
+try:  # Support both package and script runs.
     from .schemas import (
         AddMemoryArgs,
         ConfigSchema,
@@ -23,9 +32,10 @@ try:  # Support both package (`python -m mem0_mcp.server`) and script (`python m
         GetMemoriesArgs,
         SearchMemoriesArgs,
         ToolMessage,
+        UpdateMemoryArgs,
     )
 except ImportError:  # pragma: no cover - fallback for script execution
-    from schemas import (
+    from schemas import (  # type: ignore[no-redef]
         AddMemoryArgs,
         ConfigSchema,
         DeleteAllArgs,
@@ -33,15 +43,13 @@ except ImportError:  # pragma: no cover - fallback for script execution
         GetMemoriesArgs,
         SearchMemoriesArgs,
         ToolMessage,
+        UpdateMemoryArgs,
     )
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(message)s")
 logger = logging.getLogger("mem0_mcp_server")
-
-
-
 
 T = TypeVar("T")
 
@@ -60,123 +68,279 @@ except ImportError:  # pragma: no cover - Smithery optional
     smithery = _SmitheryFallback()  # type: ignore[assignment]
 
 
-# graph remains off by default , also set the default user_id to "mem0-mcp" when nothing set
+# --- Helpers ---------------------------------------------------------------
+
+# `host.docker.internal` resolves to the Docker host from inside a container;
+# treating it as local avoids forcing HTTPS for the standard Docker Desktop setup.
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
+
+
+def _validate_base_url(url: str) -> str:
+    """Validate the mem0 OSS base URL scheme and HTTPS requirement."""
+    url = url.rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"MEM0_BASE_URL must use http:// or https://, got: {url}")
+    host = urllib.parse.urlparse(url).hostname
+    if host not in _LOCAL_HOSTS and not url.startswith("https://"):
+        raise ValueError(f"MEM0_BASE_URL must use HTTPS for non-local hosts, got: {url}")
+    return url
+
+
+_REDACT_PATTERNS = [
+    re.compile(r'(?i)(api[_-]?key["\']?\s*[:=]\s*)["\']?[A-Za-z0-9_\-]{20,}'),
+    re.compile(r'(?i)(token["\']?\s*[:=]\s*)["\']?[A-Za-z0-9_\-]{20,}'),
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9_\-\.=]{20,}"),
+    re.compile(r'(?i)(authorization["\']?\s*[:=]\s*)["\']?[A-Za-z0-9_\-\.=]{20,}'),
+]
+
+
+def _redact(text: str, limit: int = 500) -> str:
+    """Redact sensitive values in `text` and truncate to `limit` chars."""
+    for pat in _REDACT_PATTERNS:
+        text = pat.sub(lambda m: m.group(1) + "[REDACTED]", text)
+    return text[:limit]
+
+
+_MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _validate_memory_id(memory_id: str) -> str:
+    """Reject memory IDs that could break the URL path."""
+    if not memory_id or not _MEMORY_ID_RE.match(memory_id):
+        raise ValueError(f"Invalid memory_id format: {memory_id!r}")
+    return memory_id
+
+
+def _error(code: str, detail: str, status: int | None = None) -> dict:
+    """Build a standardized error dict returned by tools and `_call`."""
+    err: dict[str, Any] = {"error": code, "detail": detail}
+    if status is not None:
+        err["status"] = status
+    return err
+
+
+# --- Configuration ---------------------------------------------------------
+
 ENV_API_KEY = os.getenv("MEM0_API_KEY")
+ENV_BASE_URL = _validate_base_url(os.getenv("MEM0_BASE_URL", "http://localhost:8888"))
 ENV_DEFAULT_USER_ID = os.getenv("MEM0_DEFAULT_USER_ID", "mem0-mcp")
-ENV_ENABLE_GRAPH_DEFAULT = os.getenv("MEM0_ENABLE_GRAPH_DEFAULT", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-}
+# Note: the OSS server has no graph-memory endpoints, so MEM0_ENABLE_GRAPH_DEFAULT
+# (supported by the cloud edition of this server) is intentionally not honoured here.
 
-_CLIENT_CACHE: Dict[str, MemoryClient] = {}
+def _int_env(name: str, default: int) -> int:
+    """Parse an int env var, falling back to `default` when unset or malformed."""
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("%s=%r is not an integer; using %s", name, raw, default)
+        return default
 
 
-def _config_value(source: Any, field: str):
+# Self-hosted mem0 runs LLM fact-extraction + embeddings on every write, which can
+# take minutes on local models (Ollama / LM Studio). Default generously.
+_WRITE_TIMEOUT = _int_env("MEM0_HTTP_TIMEOUT", 300)
+_READ_TIMEOUT = _int_env("MEM0_HTTP_READ_TIMEOUT", 60)
+
+
+def _config_value(source: Any, field: str) -> Any:
     if source is None:
         return None
     if isinstance(source, dict):
         return source.get(field)
-    return getattr(source, field, None)
+    return getattr(source, field, None) if hasattr(source, field) else None
 
 
-def _with_default_filters(
-    default_user_id: str, filters: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """Ensure filters exist and include the default user_id at the top level."""
-    if not filters:
-        return {"AND": [{"user_id": default_user_id}]}
-    if not any(key in filters for key in ("AND", "OR", "NOT")):
-        filters = {"AND": [filters]}
-    has_user = json.dumps(filters, sort_keys=True).find('"user_id"') != -1
-    if not has_user:
-        and_list = filters.setdefault("AND", [])
-        if not isinstance(and_list, list):
-            raise ValueError("filters['AND'] must be a list when present.")
-        and_list.insert(0, {"user_id": default_user_id})
-    return filters
-
-
-def _mem0_call(func, *args, **kwargs):
-    try:
-        result = func(*args, **kwargs)
-    except MemoryError as exc:  # surface structured error back to MCP client
-        logger.error("Mem0 call failed: %s", exc)
-        # returns the erorr to the model
-        return json.dumps(
-            {
-                "error": str(exc),
-                "status": getattr(exc, "status", None),
-                "payload": getattr(exc, "payload", None),
-            },
-            ensure_ascii=False,
-        )
-    return json.dumps(result, ensure_ascii=False)
-
-
-def _resolve_settings(ctx: Context | None) -> tuple[str, str, bool]:
+def _resolve_settings(ctx: Context | None) -> tuple[str, str, str]:
+    """Return (api_key, default_user, base_url) from session config or env."""
     session_config = getattr(ctx, "session_config", None)
-    api_key = _config_value(session_config, "mem0_api_key") or ENV_API_KEY
+    session_api_key = _config_value(session_config, "mem0_api_key")
+    if session_api_key and ENV_API_KEY:
+        logger.warning(
+            "Ignoring session-config mem0_api_key override; env MEM0_API_KEY takes precedence."
+        )
+        session_api_key = None
+    api_key = session_api_key or ENV_API_KEY
     if not api_key:
         raise RuntimeError(
-            "MEM0_API_KEY is required (via Smithery config, session config, or environment) to run the Mem0 MCP server."
+            "MEM0_API_KEY is required (via Smithery config, session config, or environment) "
+            "to run the Mem0 MCP server."
+        )
+    default_user = _config_value(session_config, "default_user_id") or ENV_DEFAULT_USER_ID
+    session_base_url = _config_value(session_config, "base_url")
+    if session_base_url and ENV_BASE_URL:
+        logger.warning(
+            "Ignoring session-config base_url override; env MEM0_BASE_URL takes precedence."
+        )
+        session_base_url = None
+    base_url = _validate_base_url(session_base_url or ENV_BASE_URL)
+    return api_key, default_user, base_url
+
+
+# --- HTTP helper -----------------------------------------------------------
+
+class Mem0OSSClient:
+    """Thin REST client for the mem0 OSS server."""
+
+    def __init__(self, base_url: str, api_key: str):
+        self._base = base_url
+        self._session = requests.Session()
+        self._session.headers.update(
+            {"X-API-Key": api_key, "Content-Type": "application/json"}
         )
 
-    default_user = _config_value(session_config, "default_user_id") or ENV_DEFAULT_USER_ID
-    enable_graph_default = _config_value(session_config, "enable_graph_default")
-    if enable_graph_default is None:
-        enable_graph_default = ENV_ENABLE_GRAPH_DEFAULT
+    def _url(self, path: str) -> str:
+        return f"{self._base}{path}"
 
-    return api_key, default_user, enable_graph_default
+    def _call(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict] = None,
+        json_body: Optional[dict] = None,
+        timeout: Optional[int] = None,
+    ) -> Any:
+        if timeout is None:
+            timeout = _WRITE_TIMEOUT if method in ("POST", "PUT", "PATCH") else _READ_TIMEOUT
+        try:
+            resp = self._session.request(
+                method,
+                self._url(path),
+                params=params,
+                json=json_body,
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            clear_client_cache()
+            logger.error("HTTP call failed: %s %s -> %s", method, path, exc)
+            return _error("http_request_failed", str(exc))
+
+        if resp.status_code >= 400:
+            logger.error(
+                "HTTP %s %s -> %s: %s",
+                method,
+                path,
+                resp.status_code,
+                _redact(resp.text, 500),
+            )
+            return _error(f"http_{resp.status_code}", _redact(resp.text, 1000), status=resp.status_code)
+        try:
+            return resp.json()
+        except ValueError:
+            return {"message": _redact(resp.text, 1000)}
+
+    # Memory CRUD
+    def add(self, body: dict) -> Any:
+        return self._call("POST", "/memories", json_body=body)
+
+    def search(self, body: dict) -> Any:
+        return self._call("POST", "/search", json_body=body)
+
+    def list_memories(self, params: dict) -> Any:
+        return self._call("GET", "/memories", params=params)
+
+    def get(self, memory_id: str) -> Any:
+        _validate_memory_id(memory_id)
+        return self._call("GET", f"/memories/{memory_id}")
+
+    def update(self, memory_id: str, body: dict) -> Any:
+        _validate_memory_id(memory_id)
+        return self._call("PUT", f"/memories/{memory_id}", json_body=body)
+
+    def delete(self, memory_id: str) -> Any:
+        _validate_memory_id(memory_id)
+        return self._call("DELETE", f"/memories/{memory_id}")
+
+    def delete_all(self, params: dict) -> Any:
+        return self._call("DELETE", "/memories", params=params, timeout=_WRITE_TIMEOUT)
+
+    def history(self, memory_id: str) -> Any:
+        _validate_memory_id(memory_id)
+        return self._call("GET", f"/memories/{memory_id}/history")
+
+    # Entities
+    def list_entities(self) -> Any:
+        return self._call("GET", "/entities")
+
+    def delete_entity(self, entity_type: str, entity_id: str) -> Any:
+        _validate_memory_id(entity_type)
+        _validate_memory_id(entity_id)
+        return self._call("DELETE", f"/entities/{entity_type}/{entity_id}")
 
 
-# init the client
-def _mem0_client(api_key: str) -> MemoryClient:
-    client = _CLIENT_CACHE.get(api_key)
-    if client is None:
-        client = MemoryClient(api_key=api_key)
-        _CLIENT_CACHE[api_key] = client
+_CLIENT_CACHE: dict[tuple[str, str], Mem0OSSClient] = {}
+_CLIENT_CACHE_MAX = 32
+
+
+def _client(base_url: str, api_key: str) -> Mem0OSSClient:
+    key = (base_url, hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16])
+    cached = _CLIENT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if len(_CLIENT_CACHE) >= _CLIENT_CACHE_MAX:
+        _CLIENT_CACHE.pop(next(iter(_CLIENT_CACHE)))
+    client = Mem0OSSClient(base_url, api_key)
+    _CLIENT_CACHE[key] = client
     return client
 
 
-def _default_enable_graph(enable_graph: Optional[bool], default: bool) -> bool:
-    if enable_graph is None:
-        return default
-    return enable_graph
+def clear_client_cache() -> None:
+    """Drop all cached clients (e.g. after a network error)."""
+    _CLIENT_CACHE.clear()
+
+
+def _with_default_user(filters: Optional[dict], default_user: str) -> dict:
+    """Inject default user_id into search filters if not already present."""
+    result = dict(filters) if filters else {}
+    if "user_id" not in result:
+        result["user_id"] = default_user
+    return result
+
+
+# --- Server factory --------------------------------------------------------
+
+try:
+    _PKG_VERSION = version("mem0-mcp-server")
+except PackageNotFoundError:  # pragma: no cover - script runs without metadata
+    _PKG_VERSION = "0.0.0"
 
 
 @smithery.server(config_schema=ConfigSchema)
 def create_server() -> FastMCP:
     """Create a FastMCP server usable via stdio, Docker, or Smithery."""
 
-    # When running inside Smithery, the platform probes the server without user-provided
-    # session config, so we defer the hard requirement for MEM0_API_KEY until a tool call.
     if not ENV_API_KEY:
         logger.warning(
-            "MEM0_API_KEY is not set; Smithery health checks will pass, but every tool "
+            "MEM0_API_KEY is not set; health checks will pass, but every tool "
             "invocation will fail until a key is supplied via session config or env vars."
         )
 
     server = FastMCP(
-        "mem0",
+        f"mem0-mcp-server/{_PKG_VERSION}",
         host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", "8081")),
+        port=_int_env("PORT", 8081),
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
-    # graph is disabled by default to make queries simpler and fast
-    # Mention " Enable/Use graph while calling memory " in your system prompt to run it in each instance
-
-    @server.tool(description="Store a new preference, fact, or conversation snippet. Requires at least one: user_id, agent_id, or run_id.")
+    @server.tool(
+        description=(
+            "Store a new preference, fact, or conversation snippet. "
+            "Requires at least one of: user_id, agent_id, or run_id."
+        )
+    )
     def add_memory(
         text: Annotated[
-            str,
+            Optional[str],
             Field(
-                description="Plain sentence summarizing what to store. Required even if `messages` is provided."
+                default=None,
+                description="Plain sentence summarizing what to store. Provide this OR `messages`.",
             ),
-        ],
+        ] = None,
         messages: Annotated[
-            Optional[list[Dict[str, str]]],
+            Optional[list[dict[str, str]]],
             Field(
                 default=None,
                 description="Structured conversation history with `role`/`content`. "
@@ -190,228 +354,252 @@ def create_server() -> FastMCP:
         agent_id: Annotated[
             Optional[str], Field(default=None, description="Optional agent identifier.")
         ] = None,
-        app_id: Annotated[
-            Optional[str], Field(default=None, description="Optional app identifier.")
-        ] = None,
         run_id: Annotated[
             Optional[str], Field(default=None, description="Optional run identifier.")
         ] = None,
         metadata: Annotated[
-            Optional[Dict[str, Any]],
+            Optional[dict[str, Any]],
             Field(default=None, description="Attach arbitrary metadata JSON to the memory."),
         ] = None,
-        enable_graph: Annotated[
+        expiration_date: Annotated[
+            Optional[str],
+            Field(default=None, description="Expiration date in YYYY-MM-DD format."),
+        ] = None,
+        infer: Annotated[
             Optional[bool],
-            Field(
-                default=None,
-                description="Set true only if the caller explicitly wants Mem0 graph memory.",
-            ),
+            Field(default=None, description="Whether to extract facts from messages. Defaults to True."),
+        ] = None,
+        memory_type: Annotated[
+            Optional[str],
+            Field(default=None, description="Type of memory to store (e.g. 'core')."),
+        ] = None,
+        prompt: Annotated[
+            Optional[str],
+            Field(default=None, description="Custom prompt to use for fact extraction."),
         ] = None,
         ctx: Context | None = None,
-    ) -> str:
+    ) -> dict | str:
         """Write durable information to Mem0."""
 
-        api_key, default_user, graph_default = _resolve_settings(ctx)
+        api_key, default_user, base_url = _resolve_settings(ctx)
+        if messages:
+            try:
+                validated_messages = [ToolMessage(**msg) for msg in messages]
+            except ValidationError as exc:
+                return _error("invalid_messages", str(exc))
+        else:
+            validated_messages = None
         args = AddMemoryArgs(
             text=text,
-            messages=[ToolMessage(**msg) for msg in messages] if messages else None,
+            messages=validated_messages,
             user_id=user_id if user_id else (default_user if not (agent_id or run_id) else None),
             agent_id=agent_id,
-            app_id=app_id,
             run_id=run_id,
             metadata=metadata,
-            enable_graph=_default_enable_graph(enable_graph, graph_default),
+            expiration_date=expiration_date,
+            infer=infer,
+            memory_type=memory_type,
+            prompt=prompt,
         )
         payload = args.model_dump(exclude_none=True)
-        payload.setdefault("enable_graph", graph_default)
         conversation = payload.pop("messages", None)
         if not conversation:
             derived_text = payload.pop("text", None)
             if derived_text:
                 conversation = [{"role": "user", "content": derived_text}]
             else:
-                return json.dumps(
-                    {
-                        "error": "messages_missing",
-                        "detail": "Provide either `text` or `messages` so Mem0 knows what to store.",
-                    },
-                    ensure_ascii=False,
+                return _error(
+                    "messages_missing",
+                    "Provide either `text` or `messages` so Mem0 knows what to store.",
                 )
         else:
             payload.pop("text", None)
 
-        client = _mem0_client(api_key)
-        return _mem0_call(client.add, conversation, **payload)
+        body = {**payload, "messages": conversation}
+        return _client(base_url, api_key).add(body)
 
     @server.tool(
-        description="""Run a semantic search over existing memories.
-
-        Use filters to narrow results. Common filter patterns:
-        - Single user: {"AND": [{"user_id": "john"}]}
-        - Agent memories: {"AND": [{"agent_id": "agent_name"}]}
-        - Recent memories: {"AND": [{"user_id": "john"}, {"created_at": {"gte": "2024-01-01"}}]}
-        - Multiple users: {"AND": [{"user_id": {"in": ["john", "jane"]}}]}
-        - Cross-entity: {"OR": [{"user_id": "john"}, {"agent_id": "agent_name"}]}
-
-        user_id is automatically added to filters if not provided.
-        """
+        description=(
+            "Run a semantic search over existing memories.\n\n"
+            "Use `filters` to narrow results. user_id is automatically added to filters "
+            "if not provided. Set `top_k` to limit results, `threshold` for minimum "
+            "similarity, and `explain` to include score details."
+        )
     )
     def search_memories(
         query: Annotated[str, Field(description="Natural language description of what to find.")],
         filters: Annotated[
-            Optional[Dict[str, Any]],
+            Optional[dict[str, Any]],
             Field(default=None, description="Additional filter clauses (user_id injected automatically)."),
         ] = None,
-        limit: Annotated[
+        top_k: Annotated[
             Optional[int], Field(default=None, description="Maximum number of results to return.")
         ] = None,
-        enable_graph: Annotated[
+        threshold: Annotated[
+            Optional[float], Field(default=None, description="Minimum similarity score for results.")
+        ] = None,
+        explain: Annotated[
             Optional[bool],
-            Field(
-                default=None,
-                description="Set true only when the user explicitly wants graph-derived memories.",
-            ),
+            Field(default=None, description="Include score details for each search result."),
+        ] = None,
+        show_expired: Annotated[
+            Optional[bool], Field(default=None, description="Include expired memories.")
         ] = None,
         ctx: Context | None = None,
-    ) -> str:
+    ) -> dict | str:
         """Semantic search against existing memories."""
 
-        api_key, default_user, graph_default = _resolve_settings(ctx)
+        api_key, default_user, base_url = _resolve_settings(ctx)
         args = SearchMemoriesArgs(
             query=query,
-            filters=filters,
-            limit=limit,
-            enable_graph=_default_enable_graph(enable_graph, graph_default),
+            filters=_with_default_user(filters, default_user),
+            top_k=top_k,
+            threshold=threshold,
+            explain=explain,
+            show_expired=show_expired,
         )
-        payload = args.model_dump(exclude_none=True)
-        payload["filters"] = _with_default_filters(default_user, payload.get("filters"))
-        payload.setdefault("enable_graph", graph_default)
-        client = _mem0_client(api_key)
-        return _mem0_call(client.search, **payload)
+        body = args.model_dump(exclude_none=True)
+        return _client(base_url, api_key).search(body)
 
     @server.tool(
-        description="""Page through memories using filters instead of search.
-
-        Use filters to list specific memories. Common filter patterns:
-        - Single user: {"AND": [{"user_id": "john"}]}
-        - Agent memories: {"AND": [{"agent_id": "agent_name"}]}
-        - Recent memories: {"AND": [{"user_id": "john"}, {"created_at": {"gte": "2024-01-01"}}]}
-        - Multiple users: {"AND": [{"user_id": {"in": ["john", "jane"]}}]}
-
-        Pagination: Use page (1-indexed) and page_size for browsing results.
-        user_id is automatically added to filters if not provided.
-        """
+        description=(
+            "List memories using flat filters (user_id, agent_id, run_id) and optional top_k.\n\n"
+            "Unlike the cloud API, the OSS server does not support AND/OR/NOT filter trees; "
+            "use the dedicated parameters. user_id defaults to the server's default user."
+        )
     )
     def get_memories(
-        filters: Annotated[
-            Optional[Dict[str, Any]],
-            Field(default=None, description="Structured filters; user_id injected automatically."),
+        user_id: Annotated[
+            Optional[str],
+            Field(default=None, description="Filter by user ID; defaults to server user."),
         ] = None,
-        page: Annotated[
-            Optional[int], Field(default=None, description="1-indexed page number when paginating.")
+        agent_id: Annotated[
+            Optional[str], Field(default=None, description="Filter by agent ID.")
         ] = None,
-        page_size: Annotated[
-            Optional[int], Field(default=None, description="Number of memories per page (default 10).")
+        run_id: Annotated[
+            Optional[str], Field(default=None, description="Filter by run ID.")
         ] = None,
-        enable_graph: Annotated[
-            Optional[bool],
-            Field(
-                default=None,
-                description="Set true only if the caller explicitly wants graph-derived memories.",
-            ),
+        top_k: Annotated[
+            Optional[int], Field(default=None, description="Maximum number of memories (max 1000).")
+        ] = None,
+        show_expired: Annotated[
+            Optional[bool], Field(default=None, description="Include expired memories.")
         ] = None,
         ctx: Context | None = None,
-    ) -> str:
-        """List memories via structured filters or pagination."""
+    ) -> dict | str:
+        """List memories via flat filters."""
 
-        api_key, default_user, graph_default = _resolve_settings(ctx)
+        api_key, default_user, base_url = _resolve_settings(ctx)
         args = GetMemoriesArgs(
-            filters=filters,
-            page=page,
-            page_size=page_size,
-            enable_graph=_default_enable_graph(enable_graph, graph_default),
+            user_id=user_id or default_user,
+            agent_id=agent_id,
+            run_id=run_id,
+            top_k=top_k,
+            show_expired=show_expired,
         )
-        payload = args.model_dump(exclude_none=True)
-        payload["filters"] = _with_default_filters(default_user, payload.get("filters"))
-        payload.setdefault("enable_graph", graph_default)
-        client = _mem0_client(api_key)
-        return _mem0_call(client.get_all, **payload)
+        params = args.model_dump(exclude_none=True)
+        return _client(base_url, api_key).list_memories(params)
 
-    @server.tool(
-        description="Delete every memory in the given user/agent/app/run but keep the entity."
-    )
+    @server.tool(description="Delete every memory in the given user/agent/run scope but keep the entity.")
     def delete_all_memories(
         user_id: Annotated[
-            Optional[str], Field(default=None, description="User scope to delete; defaults to server user.")
+            Optional[str],
+            Field(default=None, description="User scope to delete; defaults to server user."),
         ] = None,
         agent_id: Annotated[
             Optional[str], Field(default=None, description="Optional agent scope to delete.")
-        ] = None,
-        app_id: Annotated[
-            Optional[str], Field(default=None, description="Optional app scope to delete.")
         ] = None,
         run_id: Annotated[
             Optional[str], Field(default=None, description="Optional run scope to delete.")
         ] = None,
         ctx: Context | None = None,
-    ) -> str:
+    ) -> dict | str:
         """Bulk-delete every memory in the confirmed scope."""
 
-        api_key, default_user, _ = _resolve_settings(ctx)
+        api_key, default_user, base_url = _resolve_settings(ctx)
         args = DeleteAllArgs(
             user_id=user_id or default_user,
             agent_id=agent_id,
-            app_id=app_id,
             run_id=run_id,
         )
-        payload = args.model_dump(exclude_none=True)
-        client = _mem0_client(api_key)
-        return _mem0_call(client.delete_all, **payload)
+        params = args.model_dump(exclude_none=True)
+        return _client(base_url, api_key).delete_all(params)
 
-    @server.tool(description="List which users/agents/apps/runs currently hold memories.")
-    def list_entities(ctx: Context | None = None) -> str:
-        """List users/agents/apps/runs with stored memories."""
+    @server.tool(description="List which users/agents/runs currently hold memories.")
+    def list_entities(ctx: Context | None = None) -> dict | str:
+        """List users/agents/runs with stored memories."""
 
-        api_key, _, _ = _resolve_settings(ctx)
-        client = _mem0_client(api_key)
-        return _mem0_call(client.users)
+        api_key, _, base_url = _resolve_settings(ctx)
+        return _client(base_url, api_key).list_entities()
 
     @server.tool(description="Fetch a single memory once you know its memory_id.")
     def get_memory(
         memory_id: Annotated[str, Field(description="Exact memory_id to fetch.")],
         ctx: Context | None = None,
-    ) -> str:
+    ) -> dict | str:
         """Retrieve a single memory once the user has picked an exact ID."""
 
-        api_key, _, _ = _resolve_settings(ctx)
-        client = _mem0_client(api_key)
-        return _mem0_call(client.get, memory_id)
+        api_key, _, base_url = _resolve_settings(ctx)
+        try:
+            return _client(base_url, api_key).get(memory_id)
+        except ValueError as exc:
+            return _error("invalid_memory_id", str(exc))
 
-    @server.tool(description="Overwrite an existing memory’s text.")
+    @server.tool(description="Retrieve the edit history of a single memory.")
+    def get_memory_history(
+        memory_id: Annotated[str, Field(description="Exact memory_id to fetch history for.")],
+        ctx: Context | None = None,
+    ) -> dict | str:
+        """Retrieve the edit history of a single memory."""
+
+        api_key, _, base_url = _resolve_settings(ctx)
+        try:
+            return _client(base_url, api_key).history(memory_id)
+        except ValueError as exc:
+            return _error("invalid_memory_id", str(exc))
+
+    @server.tool(description="Overwrite an existing memory's text and/or metadata.")
     def update_memory(
         memory_id: Annotated[str, Field(description="Exact memory_id to overwrite.")],
-        text: Annotated[str, Field(description="Replacement text for the memory.")],
+        text: Annotated[Optional[str], Field(default=None, description="Replacement text for the memory.")] = None,
+        metadata: Annotated[
+            Optional[dict[str, Any]], Field(default=None, description="Metadata to update.")
+        ] = None,
+        expiration_date: Annotated[
+            Optional[str], Field(default=None, description="Expiration date in YYYY-MM-DD format.")
+        ] = None,
         ctx: Context | None = None,
-    ) -> str:
-        """Overwrite an existing memory’s text after the user confirms the exact memory_id."""
+    ) -> dict | str:
+        """Overwrite an existing memory after the user confirms the exact memory_id."""
 
-        api_key, _, _ = _resolve_settings(ctx)
-        client = _mem0_client(api_key)
-        return _mem0_call(client.update, memory_id=memory_id, text=text)
+        api_key, _, base_url = _resolve_settings(ctx)
+        args = UpdateMemoryArgs(text=text, metadata=metadata, expiration_date=expiration_date)
+        body = args.model_dump(exclude_none=True)
+        if not body:
+            return _error(
+                "nothing_to_update",
+                "Provide at least one of: text, metadata, expiration_date.",
+            )
+        try:
+            return _client(base_url, api_key).update(memory_id, body)
+        except ValueError as exc:
+            return _error("invalid_memory_id", str(exc))
 
     @server.tool(description="Delete one memory after the user confirms its memory_id.")
     def delete_memory(
         memory_id: Annotated[str, Field(description="Exact memory_id to delete.")],
         ctx: Context | None = None,
-    ) -> str:
+    ) -> dict | str:
         """Delete a memory once the user explicitly confirms the memory_id to remove."""
 
-        api_key, _, _ = _resolve_settings(ctx)
-        client = _mem0_client(api_key)
-        return _mem0_call(client.delete, memory_id)
+        api_key, _, base_url = _resolve_settings(ctx)
+        try:
+            return _client(base_url, api_key).delete(memory_id)
+        except ValueError as exc:
+            return _error("invalid_memory_id", str(exc))
 
     @server.tool(
-        description="Remove a user/agent/app/run record entirely (and cascade-delete its memories)."
+        description="Remove a user/agent/run record entirely (and cascade-delete its memories)."
     )
     def delete_entities(
         user_id: Annotated[
@@ -420,56 +608,54 @@ def create_server() -> FastMCP:
         agent_id: Annotated[
             Optional[str], Field(default=None, description="Delete this agent and its memories.")
         ] = None,
-        app_id: Annotated[
-            Optional[str], Field(default=None, description="Delete this app and its memories.")
-        ] = None,
         run_id: Annotated[
             Optional[str], Field(default=None, description="Delete this run and its memories.")
         ] = None,
         ctx: Context | None = None,
-    ) -> str:
-        """Delete a user/agent/app/run (and its memories) once the user confirms the scope."""
+    ) -> dict | str:
+        """Delete a user/agent/run (and its memories) once the user confirms the scope."""
 
-        api_key, _, _ = _resolve_settings(ctx)
-        args = DeleteEntitiesArgs(
-            user_id=user_id,
-            agent_id=agent_id,
-            app_id=app_id,
-            run_id=run_id,
+        api_key, _, base_url = _resolve_settings(ctx)
+        args = DeleteEntitiesArgs(user_id=user_id, agent_id=agent_id, run_id=run_id)
+        scope = next(
+            (
+                (etype, value)
+                for etype, value in (
+                    ("user", args.user_id),
+                    ("agent", args.agent_id),
+                    ("run", args.run_id),
+                )
+                if value
+            ),
+            None,
         )
-        if not any([args.user_id, args.agent_id, args.app_id, args.run_id]):
-            return json.dumps(
-                {
-                    "error": "scope_missing",
-                    "detail": "Provide user_id, agent_id, app_id, or run_id before calling delete_entities.",
-                },
-                ensure_ascii=False,
+        if scope is None:
+            return _error(
+                "scope_missing",
+                "Provide user_id, agent_id, or run_id before calling delete_entities.",
             )
-        payload = args.model_dump(exclude_none=True)
-        client = _mem0_client(api_key)
-        return _mem0_call(client.delete_users, **payload)
+        try:
+            return _client(base_url, api_key).delete_entity(*scope)
+        except ValueError as exc:
+            return _error("invalid_entity", str(exc))
 
-    # Add a simple prompt for server capabilities
     @server.prompt()
     def memory_assistant() -> str:
         """Get help with memory operations and best practices."""
-        return """You are using the Mem0 MCP server for long-term memory management.
+        return """You are using the Mem0 MCP server (OSS REST edition) for long-term memory management.
 
 Quick Start:
 1. Store memories: Use add_memory to save facts, preferences, or conversations
 2. Search memories: Use search_memories for semantic queries
-3. List memories: Use get_memories for filtered browsing
+3. List memories: Use get_memories for filtered browsing (flat filters: user_id, agent_id, run_id)
 4. Update/Delete: Use update_memory and delete_memory for modifications
+5. History: Use get_memory_history to see edits to a single memory
 
-Filter Examples:
-- User memories: {"AND": [{"user_id": "john"}]}
-- Agent memories: {"AND": [{"agent_id": "agent_name"}]}
-- Recent only: {"AND": [{"user_id": "john"}, {"created_at": {"gte": "2024-01-01"}}]}
-
-Tips:
-- user_id is automatically added to filters
-- Use "*" as wildcard for any non-null value
-- Combine filters with AND/OR/NOT for complex queries"""
+Notes:
+- user_id is automatically added to search filters and get_memories defaults
+- The OSS server uses flat filters (user_id, agent_id, run_id), not AND/OR/NOT trees
+- Graph memory is not available on the OSS server
+- Use expiration_date (YYYY-MM-DD) for time-limited memories"""
 
     return server
 
@@ -478,7 +664,11 @@ def main() -> None:
     """Run the MCP server over stdio."""
 
     server = create_server()
-    logger.info("Starting Mem0 MCP server (default user=%s)", ENV_DEFAULT_USER_ID)
+    logger.info(
+        "Starting Mem0 MCP server (OSS, base_url=%s, default user=%s)",
+        ENV_BASE_URL,
+        ENV_DEFAULT_USER_ID,
+    )
     server.run(transport="stdio")
 
 

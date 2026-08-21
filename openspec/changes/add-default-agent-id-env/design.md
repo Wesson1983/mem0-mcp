@@ -31,8 +31,11 @@ no upstream change is required.
 - Add `MEM0_DEFAULT_AGENT_ID` env support mirroring `MEM0_DEFAULT_USER_ID`.
 - Apply the default `agent_id` consistently across `add_memory`, `get_memories`,
   `search_memories`, `delete_all_memories` when the caller omits it.
-- Preserve the existing "explicit caller value wins" and "env wins over session
-  config" precedence patterns already established for `user_id`.
+- Preserve the existing "explicit caller value wins" precedence for `user_id`.
+  Align `user_id` to the same "env wins over session config with a warning"
+  rule already used for `mem0_api_key` and `base_url`, so all four resolved
+  fields share one precedence. (Previously `default_user_id` was session-wins
+  with no warning — see the Risks section.)
 - Stay backward compatible: unset env + unset session config = identical
   behavior to today.
 
@@ -50,10 +53,12 @@ no upstream change is required.
 ### D1: Resolve `default_agent` inside `_resolve_settings`
 
 Extend `_resolve_settings` to return a 4-tuple
-`(api_key, default_user, default_agent, base_url)`. Resolution mirrors
-`default_user`: env `MEM0_DEFAULT_AGENT_ID` wins over session-config
-`default_agent_id`, with a warning on conflict; session config used when env is
-unset; empty when neither is set.
+`(api_key, default_user, default_agent, base_url)`. Both `default_user` and
+`default_agent` resolve with the same rule: env wins over session config with a
+warning on conflict; session config used when env is unset; empty when neither
+is set. `default_user` previously resolved session-wins with no warning — this
+change aligns it to the env-wins-with-warning rule already used for
+`mem0_api_key` and `base_url`, so all four fields share one precedence.
 
 **Why:** centralizes all default resolution in one place, so every tool gets
 the same value via the same precedence. Avoids four separate
@@ -144,6 +149,18 @@ silently dropped.
 default_agent_id supported" requirement.
 
 ## Risks / Trade-offs
+
+- **[Risk] `default_user_id` precedence changes from session-wins to
+  env-wins-with-warning.** Operators who relied on session-config
+  `default_user_id` to override the `mem0-mcp` default (without setting
+  `MEM0_DEFAULT_USER_ID`) will now see that override ignored with a warning.
+  Because `ENV_DEFAULT_USER_ID` carries a built-in default of `mem0-mcp`, the
+  env value is never empty, so session-config `default_user_id` is in practice
+  always overridden — this matches the existing `base_url` behavior (same
+  env-wins-with-warning pattern, same built-in-default quirk).
+  → Mitigation: set `MEM0_DEFAULT_USER_ID` in the environment to change the
+  default user. Documented in AGENTS.md and the spec's "Default user_id
+  precedence aligned to env-wins" requirement.
 
 - **[Risk] Existing users with `MEM0_DEFAULT_USER_ID` set who adopt
   `MEM0_DEFAULT_AGENT_ID` will see `user_id` stop being auto-filled on writes

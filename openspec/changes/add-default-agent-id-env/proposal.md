@@ -15,8 +15,11 @@ where the caller did not pass one explicitly.
 - Add `MEM0_DEFAULT_AGENT_ID` environment variable, read once at startup like
   `MEM0_DEFAULT_USER_ID`, defaulting to unset (no agent scope).
 - `_resolve_settings` returns a fourth value, `default_agent`, sourced from env
-  (env wins over session-config `default_agent_id` to mirror the existing
-  `default_user_id` precedence).
+  (env wins over session-config `default_agent_id` with a warning on conflict).
+  `default_user_id` is also aligned to the same env-wins-with-warning rule
+  (previously session-wins, no warning), so all four resolved fields
+  (`api_key`, `default_user`, `default_agent`, `base_url`) share one
+  precedence.
 - `add_memory`: when the caller does not pass `agent_id` and `default_agent` is
   set, inject `default_agent`. Explicit `agent_id` always wins. The existing
   "default `user_id` only when no agent_id and no run_id" rule is preserved.
@@ -45,10 +48,15 @@ where the caller did not pass one explicitly.
   `ConfigSchema` exposes session-config fields (add `default_agent_id`).
 - **Env**: one new optional variable, `MEM0_DEFAULT_AGENT_ID`. No new required
   variables; `MEM0_API_KEY` remains the only hard requirement.
-- **Behavior**: backward compatible. With `MEM0_DEFAULT_AGENT_ID` unset,
-  behavior is identical to today. With it set, unscoped calls gain an
-  `agent_id` filter — callers that already pass `agent_id` are unaffected.
-- **Docs**: `AGENTS.md` "Environment variables" section gains one bullet.
+- **Behavior**: mostly backward compatible. With `MEM0_DEFAULT_AGENT_ID` unset,
+  agent-scoping behavior is identical to today. With it set, unscoped calls
+  gain an `agent_id` filter — callers that already pass `agent_id` are
+  unaffected. One exception: `default_user_id` precedence changes from
+  session-wins to env-wins-with-warning (see design.md Risks), so operators
+  relying on session-config `default_user_id` without setting
+  `MEM0_DEFAULT_USER_ID` must now set the env var.
+- **Docs**: `AGENTS.md` "Environment variables" section gains one bullet and
+  the `MEM0_DEFAULT_USER_ID` bullet is updated to note env-wins-with-warning.
 - **No upstream mem0 fork required.** This is MCP-layer only; the OSS REST
   server already accepts `agent_id` on `/memories`, `/search`, and
   `DELETE /memories`.

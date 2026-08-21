@@ -85,7 +85,18 @@ server's `FastMCP` usage depends on.
   Dockerfile defaults to `http://host.docker.internal:8888` so the container
   can reach the host. On Linux Docker, `host.docker.internal` does not resolve
   by default — override it or add `--add-host`.
-- `MEM0_DEFAULT_USER_ID` — default scope (defaults to `mem0-mcp`).
+- `MEM0_DEFAULT_USER_ID` — default scope (defaults to `mem0-mcp`). Env wins
+  over session-config `default_user_id` with a warning on conflict; because the
+  env var carries a built-in default, session-config `default_user_id` is in
+  practice always overridden — set `MEM0_DEFAULT_USER_ID` to change the default
+  user.
+- `MEM0_DEFAULT_AGENT_ID` — default `agent_id` injected into `add_memory`,
+  `get_memories`, `search_memories`, and `delete_all_memories` when the caller
+  omits `agent_id`. Explicit caller `agent_id` always wins. Unset (or
+  whitespace-only, which logs a warning and is treated as unset) = no agent
+  scope, identical to pre-change behavior. `list_entities` is unaffected (it
+  takes no scope params). Env wins over session-config `default_agent_id` with
+  a warning on conflict, mirroring `MEM0_DEFAULT_USER_ID` precedence.
 - `MEM0_HTTP_TIMEOUT` — seconds, default `300`. Self-hosted writes run LLM fact
   extraction + embeddings; with local models (LM Studio / Ollama) a single
   `add_memory` measured **~48s**. A 30s timeout is too low.
@@ -100,6 +111,11 @@ docker run -d --name mem0-mcp-oss --restart unless-stopped `
 
 Secrets live in `.env.local` (gitignored). The tracked `.env` holds placeholders
 only — never put a real key there, it is a tracked file.
+
+`.env` is deliberately **not** in `.gitignore`. It was listed there once, which
+did nothing (ignore rules do not apply to already-tracked files) but made `.env`
+look safe to edit — a real `MEM0_API_KEY` was committed and pushed to a public
+repo as a result. Keeping it unignored means `git status` shows edits to it.
 
 ## Devin CLI wiring
 

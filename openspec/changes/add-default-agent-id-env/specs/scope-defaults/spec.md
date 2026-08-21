@@ -103,7 +103,9 @@ the `agent_id` key when that key is absent.
 The session-config schema SHALL accept an optional `default_agent_id` field
 mirroring the existing `default_user_id` field. The environment variable
 `MEM0_DEFAULT_AGENT_ID` SHALL take precedence over session-config
-`default_agent_id`, matching the established precedence for `default_user_id`.
+`default_agent_id` with a warning logged on conflict, matching the precedence
+this change establishes for `default_user_id` (see the "Default user_id
+precedence aligned to env-wins" requirement below).
 
 #### Scenario: Env var overrides session config
 - **WHEN** `MEM0_DEFAULT_AGENT_ID=project-A` is set and session config supplies
@@ -116,15 +118,50 @@ mirroring the existing `default_user_id` field. The environment variable
   `default_agent_id="project-B"`
 - **THEN** the resolved default agent scope is `"project-B"`
 
+### Requirement: Default user_id precedence aligned to env-wins
+
+The environment variable `MEM0_DEFAULT_USER_ID` SHALL take precedence over
+session-config `default_user_id` with a warning logged on conflict, matching
+the precedence rule applied to `default_agent_id`, `mem0_api_key`, and
+`base_url`. Prior to this change, `default_user_id` resolved session-wins with
+no warning; this change aligns it to the shared env-wins-with-warning rule so
+all four resolved fields have one precedence.
+
+Because `MEM0_DEFAULT_USER_ID` carries a built-in default of `mem0-mcp`, the
+env value is never empty. A session-config `default_user_id` is therefore in
+practice always overridden (with a warning); operators who want a non-default
+user MUST set `MEM0_DEFAULT_USER_ID` in the environment.
+
+#### Scenario: Env var overrides session config
+- **WHEN** `MEM0_DEFAULT_USER_ID=pavel` is set and session config supplies
+  `default_user_id="guest"`
+- **THEN** the resolved default user is `"pavel"` and a warning is logged that
+  the session-config value is being ignored
+
+#### Scenario: Env var at built-in default still overrides session config
+- **WHEN** `MEM0_DEFAULT_USER_ID` is unset (so resolves to the built-in default
+  `mem0-mcp`) and session config supplies `default_user_id="guest"`
+- **THEN** the resolved default user is `"mem0-mcp"` and a warning is logged
+  that the session-config value is being ignored
+
+#### Scenario: Env var unset, no session config
+- **WHEN** `MEM0_DEFAULT_USER_ID` is unset and session config supplies no
+  `default_user_id`
+- **THEN** the resolved default user is `"mem0-mcp"` (the built-in default) and
+  no warning is logged
+
 ### Requirement: Backward compatibility when default agent_id unset
 
 When `MEM0_DEFAULT_AGENT_ID` is unset and session config supplies no
-`default_agent_id`, the behavior of every memory tool SHALL be identical to the
-behavior prior to this change. No `agent_id` SHALL be injected into any tool
-call by the default-resolution mechanism.
+`default_agent_id`, no `agent_id` SHALL be injected into any tool call by the
+default-resolution mechanism — agent-scoping behavior is identical to prior to
+this change. (The `default_user_id` precedence change is a separate,
+documented exception; see the "Default user_id precedence aligned to
+env-wins" requirement.)
 
 #### Scenario: No default agent_id configured
 - **WHEN** neither `MEM0_DEFAULT_AGENT_ID` nor session-config
   `default_agent_id` is set
 - **THEN** `add_memory`, `get_memories`, `search_memories`, and
-  `delete_all_memories` behave exactly as they did before this change
+  `delete_all_memories` inject no `agent_id`, matching pre-change agent-scoping
+  behavior

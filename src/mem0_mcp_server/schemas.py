@@ -31,6 +31,9 @@ class ConfigSchema(BaseModel):
     default_user_id: Optional[str] = Field(
         None, description="Default user_id injected into filters when unspecified."
     )
+    default_agent_id: Optional[str] = Field(
+        None, description="Default agent_id injected into filters when unspecified."
+    )
     base_url: Optional[str] = Field(
         None, description="Base URL of the mem0 OSS REST server (e.g. http://localhost:8888)."
     )

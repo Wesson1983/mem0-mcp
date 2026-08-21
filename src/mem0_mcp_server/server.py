@@ -124,6 +124,20 @@ def _error(code: str, detail: str, status: int | None = None) -> dict:
 ENV_API_KEY = os.getenv("MEM0_API_KEY")
 ENV_BASE_URL = _validate_base_url(os.getenv("MEM0_BASE_URL", "http://localhost:8888"))
 ENV_DEFAULT_USER_ID = os.getenv("MEM0_DEFAULT_USER_ID", "mem0-mcp")
+# Default agent scope mirrors ENV_DEFAULT_USER_ID: read once at startup, trim, and
+# treat whitespace-only as unset (the mem0 core SDK rejects whitespace entity IDs).
+_raw_default_agent_id = os.getenv("MEM0_DEFAULT_AGENT_ID")
+if _raw_default_agent_id is not None:
+    _raw_default_agent_id = _raw_default_agent_id.strip()
+    if not _raw_default_agent_id:
+        logger.warning(
+            "MEM0_DEFAULT_AGENT_ID is set to a whitespace-only value; treating as unset."
+        )
+# Resolve to None (not "") when unset: callers pass `agent_id or default_agent`
+# into Pydantic models serialized with exclude_none=True. An empty string would
+# survive exclude_none and leak "agent_id": "" into the payload, violating the
+# spec's "no agent_id injected when default unset" guarantee. None is excluded.
+ENV_DEFAULT_AGENT_ID: Optional[str] = _raw_default_agent_id or None
 # Note: the OSS server has no graph-memory endpoints, so MEM0_ENABLE_GRAPH_DEFAULT
 # (supported by the cloud edition of this server) is intentionally not honoured here.
 
@@ -153,8 +167,19 @@ def _config_value(source: Any, field: str) -> Any:
     return getattr(source, field, None) if hasattr(source, field) else None
 
 
-def _resolve_settings(ctx: Context | None) -> tuple[str, str, str]:
-    """Return (api_key, default_user, base_url) from session config or env."""
+def _resolve_settings(ctx: Context | None) -> tuple[str, str, Optional[str], str]:
+    """Return (api_key, default_user, default_agent, base_url) from session config or env.
+
+    For all four fields, env wins over session config with a warning on conflict
+    (matching the established api_key/base_url pattern). default_agent is None
+    when no default is configured (env unset and no session config), so callers'
+    `agent_id or default_agent` yields None and is dropped by exclude_none=True
+    — preserving pre-change behavior of not injecting agent_id. default_user
+    always resolves to at least ENV_DEFAULT_USER_ID, whose built-in default is
+    "mem0-mcp"; because that env value is never empty, a session-config
+    default_user_id is always overridden (with a warning) — operators must set
+    MEM0_DEFAULT_USER_ID to change the default user.
+    """
     session_config = getattr(ctx, "session_config", None)
     session_api_key = _config_value(session_config, "mem0_api_key")
     if session_api_key and ENV_API_KEY:
@@ -168,7 +193,22 @@ def _resolve_settings(ctx: Context | None) -> tuple[str, str, str]:
             "MEM0_API_KEY is required (via Smithery config, session config, or environment) "
             "to run the Mem0 MCP server."
         )
-    default_user = _config_value(session_config, "default_user_id") or ENV_DEFAULT_USER_ID
+    session_default_user = _config_value(session_config, "default_user_id")
+    if session_default_user and ENV_DEFAULT_USER_ID:
+        logger.warning(
+            "Ignoring session-config default_user_id override; "
+            "env MEM0_DEFAULT_USER_ID takes precedence."
+        )
+        session_default_user = None
+    default_user = session_default_user or ENV_DEFAULT_USER_ID
+    session_default_agent = _config_value(session_config, "default_agent_id")
+    if session_default_agent and ENV_DEFAULT_AGENT_ID:
+        logger.warning(
+            "Ignoring session-config default_agent_id override; "
+            "env MEM0_DEFAULT_AGENT_ID takes precedence."
+        )
+        session_default_agent = None
+    default_agent = session_default_agent or ENV_DEFAULT_AGENT_ID
     session_base_url = _config_value(session_config, "base_url")
     if session_base_url and ENV_BASE_URL:
         logger.warning(
@@ -176,7 +216,7 @@ def _resolve_settings(ctx: Context | None) -> tuple[str, str, str]:
         )
         session_base_url = None
     base_url = _validate_base_url(session_base_url or ENV_BASE_URL)
-    return api_key, default_user, base_url
+    return api_key, default_user, default_agent, base_url
 
 
 # --- HTTP helper -----------------------------------------------------------
@@ -292,11 +332,15 @@ def clear_client_cache() -> None:
     _CLIENT_CACHE.clear()
 
 
-def _with_default_user(filters: Optional[dict], default_user: str) -> dict:
-    """Inject default user_id into search filters if not already present."""
+def _with_default_filters(
+    filters: Optional[dict], default_user: str, default_agent: Optional[str]
+) -> dict:
+    """Inject default user_id and agent_id into search filters when absent."""
     result = dict(filters) if filters else {}
     if "user_id" not in result:
         result["user_id"] = default_user
+    if default_agent and "agent_id" not in result:
+        result["agent_id"] = default_agent
     return result
 
 
@@ -381,7 +425,7 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """Write durable information to Mem0."""
 
-        api_key, default_user, base_url = _resolve_settings(ctx)
+        api_key, default_user, default_agent, base_url = _resolve_settings(ctx)
         if messages:
             try:
                 validated_messages = [ToolMessage(**msg) for msg in messages]
@@ -393,7 +437,7 @@ def create_server() -> FastMCP:
             text=text,
             messages=validated_messages,
             user_id=user_id if user_id else (default_user if not (agent_id or run_id) else None),
-            agent_id=agent_id,
+            agent_id=agent_id or default_agent,
             run_id=run_id,
             metadata=metadata,
             expiration_date=expiration_date,
@@ -449,10 +493,10 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """Semantic search against existing memories."""
 
-        api_key, default_user, base_url = _resolve_settings(ctx)
+        api_key, default_user, default_agent, base_url = _resolve_settings(ctx)
         args = SearchMemoriesArgs(
             query=query,
-            filters=_with_default_user(filters, default_user),
+            filters=_with_default_filters(filters, default_user, default_agent),
             top_k=top_k,
             threshold=threshold,
             explain=explain,
@@ -489,10 +533,10 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """List memories via flat filters."""
 
-        api_key, default_user, base_url = _resolve_settings(ctx)
+        api_key, default_user, default_agent, base_url = _resolve_settings(ctx)
         args = GetMemoriesArgs(
             user_id=user_id or default_user,
-            agent_id=agent_id,
+            agent_id=agent_id or default_agent,
             run_id=run_id,
             top_k=top_k,
             show_expired=show_expired,
@@ -516,10 +560,10 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """Bulk-delete every memory in the confirmed scope."""
 
-        api_key, default_user, base_url = _resolve_settings(ctx)
+        api_key, default_user, default_agent, base_url = _resolve_settings(ctx)
         args = DeleteAllArgs(
             user_id=user_id or default_user,
-            agent_id=agent_id,
+            agent_id=agent_id or default_agent,
             run_id=run_id,
         )
         params = args.model_dump(exclude_none=True)
@@ -529,7 +573,7 @@ def create_server() -> FastMCP:
     def list_entities(ctx: Context | None = None) -> dict | str:
         """List users/agents/runs with stored memories."""
 
-        api_key, _, base_url = _resolve_settings(ctx)
+        api_key, _, _, base_url = _resolve_settings(ctx)
         return _client(base_url, api_key).list_entities()
 
     @server.tool(description="Fetch a single memory once you know its memory_id.")
@@ -539,7 +583,7 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """Retrieve a single memory once the user has picked an exact ID."""
 
-        api_key, _, base_url = _resolve_settings(ctx)
+        api_key, _, _, base_url = _resolve_settings(ctx)
         try:
             return _client(base_url, api_key).get(memory_id)
         except ValueError as exc:
@@ -552,7 +596,7 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """Retrieve the edit history of a single memory."""
 
-        api_key, _, base_url = _resolve_settings(ctx)
+        api_key, _, _, base_url = _resolve_settings(ctx)
         try:
             return _client(base_url, api_key).history(memory_id)
         except ValueError as exc:
@@ -572,7 +616,7 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """Overwrite an existing memory after the user confirms the exact memory_id."""
 
-        api_key, _, base_url = _resolve_settings(ctx)
+        api_key, _, _, base_url = _resolve_settings(ctx)
         args = UpdateMemoryArgs(text=text, metadata=metadata, expiration_date=expiration_date)
         body = args.model_dump(exclude_none=True)
         if not body:
@@ -592,7 +636,7 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """Delete a memory once the user explicitly confirms the memory_id to remove."""
 
-        api_key, _, base_url = _resolve_settings(ctx)
+        api_key, _, _, base_url = _resolve_settings(ctx)
         try:
             return _client(base_url, api_key).delete(memory_id)
         except ValueError as exc:
@@ -615,7 +659,7 @@ def create_server() -> FastMCP:
     ) -> dict | str:
         """Delete a user/agent/run (and its memories) once the user confirms the scope."""
 
-        api_key, _, base_url = _resolve_settings(ctx)
+        api_key, _, _, base_url = _resolve_settings(ctx)
         args = DeleteEntitiesArgs(user_id=user_id, agent_id=agent_id, run_id=run_id)
         scope = next(
             (

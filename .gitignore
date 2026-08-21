@@ -1,6 +1,7 @@
 # Secrets — never commit real credentials
 .env.local
 .env.*.local
+.env
 
 # Devin CLI local (gitignored) MCP config
 .devin/mcp_config.local.json

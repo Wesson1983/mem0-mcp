@@ -48,10 +48,17 @@ Documentation = "https://docs.mem0.ai"
 [project.optional-dependencies]
 agent = ["pydantic-ai-slim[mcp]>=1.14.1", "python-dotenv>=1.2.1"]
 mem0-sdk = ["mem0ai>=1.0.1"]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.7.0",
+    "mypy>=1.18.2",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3.4",
+    "pytest-asyncio>=0.23.0",
     "ruff>=0.7.0",
     "mypy>=1.18.2",
 ]

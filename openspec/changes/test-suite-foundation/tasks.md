@@ -15,7 +15,7 @@
 - [x] 3.2 Add tests for `_redact`: redacts `api_key` patterns, `token` patterns, `bearer` tokens, `authorization` headers; truncates to the limit; leaves non-sensitive text unchanged. Verify all assertions pass.
 - [x] 3.3 Add tests for `_validate_memory_id`: accepts alphanumeric + `_` + `-`; rejects empty string, slashes, spaces, special characters. Verify all assertions pass.
 - [x] 3.4 Add tests for `_error`: returns `{"error": code, "detail": detail}` without status; returns `{"error": code, "detail": detail, "status": status}` with status. Verify all assertions pass.
-- [ ] 3.5 Add tests for `_int_env`: returns the env value when set and valid; returns the default when unset; returns the default when set to a non-integer (and logs a warning). Use `monkeypatch.setenv`/`monkeypatch.delenv`. Verify all assertions pass.
+- [x] 3.5 Add tests for `_int_env`: returns the env value when set and valid; returns the default when unset; returns the default when set to a non-integer (and logs a warning). Use `monkeypatch.setenv`/`monkeypatch.delenv`. Verify all assertions pass.
 - [ ] 3.6 Add tests for `_with_default_filters`: injects `user_id` when absent; injects `agent_id` when absent and `default_agent` is set; preserves caller-supplied `user_id` and `agent_id`; handles `None` filters input. Verify all assertions pass.
 
 ## 4. Unit tests — `_resolve_settings`

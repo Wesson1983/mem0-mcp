@@ -26,14 +26,30 @@ Covers ``_validate_base_url`` (task 3.1) and ``_redact`` (task 3.2):
   ``status`` is provided.
 - Is a pure constructor (no mutation, no shared state).
 
-Tests for ``_int_env`` and ``_with_default_filters`` live in tasks 3.5-3.6.
+``_int_env`` (task 3.5):
+- Returns the env value when set and valid (including ``0``, negative, large).
+- Returns the default when the env var is unset.
+- Returns the default when the env var is set to a non-integer, and logs a
+  WARNING-level record naming the env var.
+- Returns the default for an empty-string env value (treated as unset by the
+  ``not raw`` guard).
+
+Tests for ``_with_default_filters`` live in task 3.6.
 """
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
-from mem0_mcp_server.server import _error, _redact, _validate_base_url, _validate_memory_id
+from mem0_mcp_server.server import (
+    _error,
+    _int_env,
+    _redact,
+    _validate_base_url,
+    _validate_memory_id,
+)
 
 
 @pytest.mark.parametrize(
@@ -537,3 +553,153 @@ def test_error_is_pure_constructor_no_mutation() -> None:
     # Mutating one must not affect the other.
     a["error"] = "mutated"
     assert b["error"] == "http_404"
+
+
+# ---------------------------------------------------------------------------
+# Tests for ``_int_env`` (task 3.5)
+# ---------------------------------------------------------------------------
+#
+# ``_int_env(name, default)`` reads ``os.getenv(name)`` at call time (not at
+# import time), so ``monkeypatch.setenv`` / ``monkeypatch.delenv`` are the
+# correct isolation mechanism — unlike the module-level constants
+# (``ENV_API_KEY`` etc.) captured at import, which require
+# ``monkeypatch.setattr``.  A unique env var name (``_INT_ENV_TEST_VAR``) is
+# used to avoid colliding with any real ``MEM0_*`` variable.  Every test
+# starts by deleting the var (``raising=False``) so a leaked value from a
+# previous test or the host environment cannot affect the result.
+
+
+_INT_ENV_TEST_VAR = "MEM0_TEST_INT_ENV"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("42", 42),
+        ("0", 0),
+        ("-1", -1),
+        ("999999", 999999),
+        ("-2147483648", -2147483648),
+    ],
+    ids=[
+        "positive",
+        "zero",
+        "negative",
+        "large",
+        "int32-min",
+    ],
+)
+def test_int_env_returns_value_when_set_and_valid(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
+) -> None:
+    """A set, parseable integer env var is returned as an ``int``.
+
+    Covers the spec's "returns the env value when set and valid" case across
+    several integer shapes: positive, zero (falsy but valid — pins the
+    ``int(raw)`` return path against a truthiness mutant), negative, large,
+    and the 32-bit signed minimum.
+    """
+    monkeypatch.delenv(_INT_ENV_TEST_VAR, raising=False)
+    monkeypatch.setenv(_INT_ENV_TEST_VAR, raw)
+    assert _int_env(_INT_ENV_TEST_VAR, 7) == expected
+
+
+def test_int_env_returns_default_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the env var is absent, ``_int_env`` returns the default.
+
+    ``monkeypatch.delenv(..., raising=False)`` guarantees a clean baseline
+    even if the host environment happens to define the variable, so the test
+    is order-independent and environment-independent.
+    """
+    monkeypatch.delenv(_INT_ENV_TEST_VAR, raising=False)
+    assert _int_env(_INT_ENV_TEST_VAR, 7) == 7
+
+
+def test_int_env_returns_default_when_set_to_non_integer(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A non-integer env value yields the default and logs a WARNING that
+    names the env var.
+
+    The assertion on the log record checks only the level (``WARNING``) and
+    that the env var name appears in the formatted message — not the exact
+    message text, which the spec does not require and which would be brittle
+    against wording changes.  ``caplog.set_level`` is scoped to the
+    ``mem0_mcp_server`` logger so the capture is deterministic regardless of
+    the root logger level configured at import time.
+    """
+    monkeypatch.delenv(_INT_ENV_TEST_VAR, raising=False)
+    monkeypatch.setenv(_INT_ENV_TEST_VAR, "not_a_number")
+    with caplog.at_level(logging.WARNING, logger="mem0_mcp_server"):
+        result = _int_env(_INT_ENV_TEST_VAR, 7)
+    assert result == 7
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and _INT_ENV_TEST_VAR in r.getMessage()
+    ]
+    assert warnings, (
+        f"expected a WARNING record naming {_INT_ENV_TEST_VAR}; "
+        f"got {caplog.records!r}"
+    )
+
+
+def test_int_env_returns_default_for_empty_string(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An empty-string env value is treated as unset (``not raw`` guard) and
+    returns the default.
+
+    This is a real edge case in the implementation: ``os.getenv`` returns
+    ``""`` for ``MEM0_TEST_INT_ENV=`` (set but blank), and the ``if not raw``
+    branch short-circuits before ``int("")`` would raise ``ValueError``.  No
+    warning is logged in this path (the empty string is silently treated as
+    unset, not as a malformed value), which this test also pins by asserting
+    the absence of WARNING records — a mutant that removed the ``not raw``
+    guard would route ``""`` into ``int("")``, raise ``ValueError``, log a
+    warning, and fail this assertion.
+    """
+    monkeypatch.delenv(_INT_ENV_TEST_VAR, raising=False)
+    monkeypatch.setenv(_INT_ENV_TEST_VAR, "")
+    with caplog.at_level(logging.WARNING, logger="mem0_mcp_server"):
+        result = _int_env(_INT_ENV_TEST_VAR, 7)
+    assert result == 7
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and _INT_ENV_TEST_VAR in r.getMessage()
+    ]
+    assert not warnings, (
+        f"expected no WARNING for empty-string value; got {warnings!r}"
+    )
+
+
+def test_int_env_returns_default_for_whitespace_and_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A whitespace-only value is truthy, so it is NOT short-circuited by the
+    ``not raw`` guard; it reaches ``int(" ")`` -> ``ValueError`` -> warn +
+    default.
+
+    This pins the distinction between the empty string (``""`` is falsy ->
+    short-circuit, no warning) and whitespace (``" "`` is truthy -> ValueError
+    -> warning).  The codebase already strips whitespace for
+    ``MEM0_DEFAULT_AGENT_ID`` (``server.py:130-131``), so a maintainer applying
+    the same "strip then check blank" pattern to ``_int_env`` is plausible.  A
+    mutant that changed ``if not raw:`` to ``if raw is None or not raw.strip():``
+    would silently treat whitespace as unset, skip the warning, and return the
+    default — this test fails under that mutant (``assert warnings`` is empty)
+    and passes under the current ``if not raw:`` implementation.
+    """
+    monkeypatch.delenv(_INT_ENV_TEST_VAR, raising=False)
+    monkeypatch.setenv(_INT_ENV_TEST_VAR, "   ")
+    with caplog.at_level(logging.WARNING, logger="mem0_mcp_server"):
+        result = _int_env(_INT_ENV_TEST_VAR, 7)
+    assert result == 7
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and _INT_ENV_TEST_VAR in r.getMessage()
+    ]
+    assert warnings, (
+        f"expected a WARNING for whitespace-only value; got {caplog.records!r}"
+    )

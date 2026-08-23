@@ -3,7 +3,7 @@
 The tool functions (``add_memory``, ``search_memories``, ``get_memories``,
 ``delete_all_memories``, ``list_entities``, ``get_memory``, ``get_memory_history``,
 ``update_memory``, ``delete_memory``, ``delete_entities``) are closures defined
-inside ``create_server()`` (``server.py:355``) and are therefore NOT importable
+inside ``create_server()`` (the ``@smithery.server``-decorated factory) and are therefore NOT importable
 module attributes. To call them directly from tests we instantiate the
 ``FastMCP`` server via ``create_server()`` and extract the underlying callables
 from its tool manager's tool registry (``server._tool_manager._tools[name].fn``)
@@ -16,7 +16,7 @@ Configuration is pointed at the fake mem0 OSS server (the ``fake_mem0_server``
 fixture from ``tests/conftest.py``) by patching the module-level constants
 ``ENV_BASE_URL`` and ``ENV_API_KEY`` via ``monkeypatch.setattr`` — NOT
 ``monkeypatch.setenv``, because ``server.py`` captures these at import time
-(``server.py:124-140``; design.md decision 7). ``_CLIENT_CACHE`` is cleared
+(``ENV_API_KEY`` / ``ENV_BASE_URL`` / ``ENV_DEFAULT_USER_ID`` / ``ENV_DEFAULT_AGENT_ID``; design.md decision 7). ``_CLIENT_CACHE`` is cleared
 before and after every test so a stale cached client bound to a previous test's
 torn-down fake server is never reused.
 
@@ -42,6 +42,58 @@ from mem0_mcp_server import server
 from mem0_mcp_server.server import clear_client_cache, create_server
 from tests.conftest import FakeMem0Config
 
+# The 10 tool callables are extracted from the inner ``FastMCP``'s tool
+# registry (``ToolManager._tools[name].fn``). ``create_server()`` is decorated
+# with ``@smithery.server(...)`` and returns a ``SmitheryFastMCP`` wrapper that
+# does NOT subclass ``FastMCP`` (mro ``SmitheryFastMCP -> object``); it holds
+# the real ``FastMCP`` as ``_fastmcp``. Reaching ``_tool_manager`` through
+# ``_fastmcp`` keeps us on one layer of private API (FastMCP's own
+# ``ToolManager._tools``, stable under the ``mcp[cli]<2.0.0`` pin) instead of
+# two (smithery's wrapper + FastMCP). The guard below turns a future smithery
+# or mcp release that reshapes either layer into a clear, actionable error
+# instead of an opaque ``AttributeError`` mid-suite.
+_EXPECTED_TOOL_NAMES = frozenset({
+    "add_memory", "search_memories", "get_memories", "delete_all_memories",
+    "list_entities", "get_memory", "get_memory_history", "update_memory",
+    "delete_memory", "delete_entities",
+})
+
+
+def _extract_tool_callables(wrapped_server: Any) -> dict[str, Any]:
+    """Pull the 10 underlying tool callables from the inner ``FastMCP``.
+
+    ``wrapped_server`` is the value returned by ``create_server()`` — a
+    ``SmitheryFastMCP`` whose ``_fastmcp`` attribute is the real ``FastMCP``
+    instance. Each ``Tool`` in the registry exposes ``.fn`` (the original
+    function the ``@server.tool`` decorator wrapped), which we call directly
+    to bypass the MCP transport layer and FastMCP argument coercion.
+    """
+    inner = getattr(wrapped_server, "_fastmcp", None)
+    if not isinstance(inner, FastMCP):
+        raise TypeError(
+            f"create_server() did not return a SmitheryFastMCP wrapping a "
+            f"FastMCP (got {type(wrapped_server).__name__}; "
+            f"expected a SmitheryFastMCP with a ._fastmcp FastMCP attribute). "
+            f"The smithery>=0.4.2 wrapper layout may have changed — pin or "
+            f"update smithery and revisit this extraction."
+        )
+    tool_manager = getattr(inner, "_tool_manager", None)
+    tools_map = getattr(tool_manager, "_tools", None) if tool_manager is not None else None
+    if not isinstance(tools_map, dict):
+        raise TypeError(
+            f"Inner FastMCP._tool_manager._tools is not a dict "
+            f"(got {type(tools_map).__name__}). The mcp[cli]<2.0.0 internal "
+            f"ToolManager layout may have changed — pin or update mcp and "
+            f"revisit this extraction."
+        )
+    missing = _EXPECTED_TOOL_NAMES - set(tools_map)
+    if missing:
+        raise RuntimeError(
+            f"Tool registry is missing expected tools: {sorted(missing)}. "
+            f"Got: {sorted(tools_map)}."
+        )
+    return {name: tool.fn for name, tool in tools_map.items()}
+
 _API_KEY = "test-tool-functions-api-key-aaaaaaaa"
 
 
@@ -49,7 +101,8 @@ class _StubContext:
     """Minimal stand-in for ``mcp.server.fastmcp.Context``.
 
     The tool functions only touch ``ctx`` via ``getattr(ctx, "session_config",
-    None)`` inside ``_resolve_settings`` (``server.py:183``). A bare attribute
+    None)`` inside ``_resolve_settings`` (its ``session_config = getattr(ctx,
+    "session_config", None)`` line). A bare attribute
     holder with ``session_config = None`` is sufficient and avoids constructing
     a real ``Context`` (which requires a live MCP session). Mirrors the stub in
     ``tests/unit/test_resolve_settings.py``.
@@ -71,7 +124,7 @@ def _reset_client_cache() -> Iterator[None]:
 
     ``_CLIENT_CACHE`` is module-level mutable state shared across the whole
     process. A tool call resolves a client via ``_client(base_url, api_key)``
-    (``server.py:318``) keyed by ``(base_url, sha256(api_key)[:16])``; without
+    (the ``_client`` helper) keyed by ``(base_url, sha256(api_key)[:16])``; without
     clearing, a client cached against a previous test's fake-server port would
     be reused after that server tore down, producing
     ``http_request_failed`` errors. Clearing before *and* after each test keeps
@@ -88,30 +141,30 @@ def tool_functions(
     fake_mem0_server: tuple[str, FakeMem0Config],
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[dict[str, Any], FakeMem0Config]:
-    """Build a ``FastMCP`` server and extract the 10 tool callables.
+    """Build the MCP server and extract the 10 tool callables.
 
     Patches the module-level ``ENV_BASE_URL`` / ``ENV_API_KEY`` constants
-    (captured at import time, ``server.py:124-125``) so ``_resolve_settings``
-    resolves to the fake server's URL and the test API key. ``ENV_API_KEY`` must
-    be set or ``create_server()`` only logs a warning (it does not raise), but
-    every tool call would then hit the ``not api_key`` guard in
-    ``_resolve_settings`` and raise ``RuntimeError`` — patching it here makes
-    the happy-path calls succeed.
+    (captured at import time) so ``_resolve_settings`` resolves to the fake
+    server's URL and the test API key. ``ENV_API_KEY`` must be set or
+    ``create_server()`` only logs a warning (it does not raise), but every
+    tool call would then hit the ``not api_key`` guard in ``_resolve_settings``
+    and raise ``RuntimeError`` — patching it here makes the happy-path calls
+    succeed.
 
     Returns ``(tools, config)`` where ``tools`` maps tool name to the underlying
     callable (``Tool.fn``) and ``config`` is the fake server's mutable config
     (so tests can override ``responses`` per-test and read ``received`` for the
-    echo assertions in task 8.4).
+    echo assertions in task 8.4). Tool extraction goes through
+    :func:`_extract_tool_callables`, which reaches the inner ``FastMCP`` via
+    the ``SmitheryFastMCP._fastmcp`` attribute and fails with a clear message
+    if the smithery/mcp wrapper layout changes.
     """
     base_url, config = fake_mem0_server
     monkeypatch.setattr(server, "ENV_BASE_URL", base_url)
     monkeypatch.setattr(server, "ENV_API_KEY", _API_KEY)
 
-    mcp: FastMCP = create_server()
-    tool_manager = mcp._tool_manager
-    tools: dict[str, Any] = {
-        name: tool.fn for name, tool in tool_manager._tools.items()
-    }
+    wrapped = create_server()
+    tools = _extract_tool_callables(wrapped)
     return tools, config
 
 
@@ -301,16 +354,18 @@ def test_delete_entities_returns_canned_entity_delete_response(
 #
 # Error codes asserted (matching ``server.py``):
 # - ``messages_missing``  — ``add_memory`` with neither ``text`` nor ``messages``
-#   (``server.py:455``).
+#   (the ``if not conversation:`` guard after popping ``messages``/``text``).
 # - ``invalid_messages``  — ``add_memory`` with a malformed ``messages`` entry
-#   (``ToolMessage`` ``ValidationError`` -> ``server.py:433``).
+#   (``ToolMessage`` ``ValidationError`` -> the ``except ValidationError`` branch
+#   that returns ``invalid_messages``).
 # - ``nothing_to_update`` — ``update_memory`` with no updatable fields
-#   (``server.py:623``).
+#   (the ``if not body:`` guard after ``UpdateMemoryArgs.model_dump``).
 # - ``scope_missing``     — ``delete_entities`` with no user/agent/run
-#   (``server.py:677``).
+#   (the ``if scope is None:`` guard after the ``next(...)`` over scope tuples).
 # - ``invalid_memory_id`` — ``get_memory`` / ``delete_memory`` /
 #   ``get_memory_history`` / ``update_memory`` with a memory_id that fails
-#   ``_validate_memory_id`` (``server.py:590,603,630,643``).
+#   ``_validate_memory_id`` (each tool's ``except ValueError`` branch maps it to
+#   ``invalid_memory_id``).
 #
 # Each error dict is ``{"error": <code>, "detail": <str>}`` (no ``status`` key
 # — these are validation errors, not HTTP errors). The assertions check the
@@ -319,8 +374,8 @@ def test_delete_entities_returns_canned_entity_delete_response(
 # the contract these tools expose to MCP clients).
 #
 # Invalid memory_id choice: ``"bad/id"`` contains a slash, which
-# ``_validate_memory_id`` rejects (``_MEMORY_ID_RE = ^[A-Za-z0-9_\\-]+$``,
-# ``server.py:104``). A slash is the canonical dangerous character because it
+# ``_validate_memory_id`` rejects (``_MEMORY_ID_RE = ^[A-Za-z0-9_\\-]+$``).
+# A slash is the canonical dangerous character because it
 # would break the URL path (``/memories/bad/id`` -> two path segments).
 
 _INVALID_MEMORY_ID = "bad/id"
@@ -332,7 +387,7 @@ def test_add_memory_without_text_or_messages_returns_messages_missing(
     """``add_memory()`` with neither ``text`` nor ``messages`` returns
     ``_error("messages_missing", ...)``.
 
-    ``server.py:450-458``: when ``conversation`` is falsy after popping
+    In ``add_memory``: when ``conversation`` is falsy after popping
     ``messages`` and ``text``, the tool returns the ``messages_missing`` error
     without making an HTTP call. No ``status`` key is present (this is a
     validation error, not an HTTP error).
@@ -353,8 +408,8 @@ def test_add_memory_with_malformed_messages_returns_invalid_messages(
     """``add_memory(messages=[{"role": "user"}])`` (missing ``content``) returns
     ``_error("invalid_messages", ...)``.
 
-    ``server.py:429-433``: each message dict is validated as a ``ToolMessage``
-    (which requires both ``role`` and ``content``, ``schemas.py:22-24``). A
+    In ``add_memory``: each message dict is validated as a ``ToolMessage``
+    (the ``ToolMessage`` model requires both ``role`` and ``content``). A
     message missing ``content`` raises ``ValidationError``, caught and mapped
     to ``invalid_messages``. The detail string carries the validation error
     text (redacted/truncated by Pydantic's ``str(exc)``).
@@ -378,7 +433,7 @@ def test_update_memory_with_no_fields_returns_nothing_to_update(
     """``update_memory(memory_id="mem-1")`` with no ``text``/``metadata``/
     ``expiration_date`` returns ``_error("nothing_to_update", ...)``.
 
-    ``server.py:620-626``: ``UpdateMemoryArgs`` with all-None fields
+    In ``update_memory``: ``UpdateMemoryArgs`` with all-None fields
     serializes to an empty dict via ``model_dump(exclude_none=True)``, and the
     ``if not body`` guard returns ``nothing_to_update``. The memory_id is valid
     here (``"mem-1"``) so the ``invalid_memory_id`` path is not taken — this
@@ -400,7 +455,7 @@ def test_delete_entities_with_no_scope_returns_scope_missing(
     """``delete_entities()`` with no ``user_id``/``agent_id``/``run_id`` returns
     ``_error("scope_missing", ...)``.
 
-    ``server.py:663-680``: ``DeleteEntitiesArgs`` with all-None fields makes
+    In ``delete_entities``: ``DeleteEntitiesArgs`` with all-None fields makes
     the ``next(...)`` over the (type, value) tuples return ``None``, so the
     ``scope is None`` guard fires. No HTTP call is made.
     """
@@ -426,12 +481,11 @@ def test_memory_id_tools_reject_invalid_memory_id(
     invalid ``memory_id`` return ``_error("invalid_memory_id", ...)``.
 
     Each of these tools wraps the ``Mem0OSSClient`` call in a ``try/except
-    ValueError`` (``server.py:587-590``, ``server.py:600-603``,
-    ``server.py:640-643``). ``_validate_memory_id`` (``server.py:107-111``)
-    raises ``ValueError`` for a memory_id containing a slash (rejected by
-    ``_MEMORY_ID_RE``), which is caught and mapped to ``invalid_memory_id``.
-    Parametrized across the three tools so a regression in one try/except
-    (e.g. a dropped ``except``) is isolated to a single failing case.
+    ValueError``. ``_validate_memory_id`` raises ``ValueError`` for a
+    memory_id containing a slash (rejected by ``_MEMORY_ID_RE``), which is
+    caught and mapped to ``invalid_memory_id``. Parametrized across the three
+    tools so a regression in one try/except (e.g. a dropped ``except``) is
+    isolated to a single failing case.
     """
     tools, _config = tool_functions
 
@@ -449,7 +503,7 @@ def test_update_memory_rejects_invalid_memory_id(
     """``update_memory`` with an invalid ``memory_id`` AND a valid field returns
     ``_error("invalid_memory_id", ...)``.
 
-    ``server.py:620-630``: the ``nothing_to_update`` guard runs first (against
+    In ``update_memory``: the ``nothing_to_update`` guard runs first (against
     ``body``), so to reach the ``_validate_memory_id`` path the test must pass
     a non-empty field (``text="updated"``). With a valid field present, the
     guard passes and ``_client(...).update(memory_id, body)`` calls
@@ -475,13 +529,40 @@ def test_update_memory_rejects_invalid_memory_id(
     assert "status" not in result
 
 
+def test_delete_entities_with_invalid_scope_value_returns_invalid_entity(
+    tool_functions: tuple[dict[str, Any], FakeMem0Config],
+) -> None:
+    """``delete_entities(user_id="bad/id")`` returns
+    ``_error("invalid_entity", ...)``.
+
+    Covers the ``except ValueError`` branch in ``delete_entities`` that is
+    NOT exercised by the ``scope_missing`` test (task 8.3). With a valid scope
+    present (``user_id`` is truthy), the ``scope is None`` guard passes and
+    ``_client(...).delete_entity("user", "bad/id")`` is reached.
+    ``delete_entity`` calls ``_validate_memory_id`` on both the entity type
+    (``"user"`` — valid) and the entity id (``"bad/id"`` — rejected by
+    ``_MEMORY_ID_RE`` for the slash); the ``ValueError`` propagates up to
+    ``delete_entities``'s ``except ValueError`` and is mapped to
+    ``invalid_entity``. No HTTP call reaches the wire (the validation raises
+    before ``_call``), so no ``status`` key is present.
+    """
+    tools, _config = tool_functions
+
+    result = tools["delete_entities"](user_id=_INVALID_MEMORY_ID, ctx=_STUB_CTX)
+
+    assert result["error"] == "invalid_entity"
+    assert isinstance(result["detail"], str)
+    assert result["detail"]
+    assert "status" not in result
+
+
 # ---------------------------------------------------------------------------
 # Task 8.4 — default user/agent injection (asserted via the received echo)
 # ---------------------------------------------------------------------------
 #
 # ``server.py`` reads ``MEM0_DEFAULT_USER_ID`` / ``MEM0_DEFAULT_AGENT_ID`` into
 # module-level constants (``ENV_DEFAULT_USER_ID``, ``ENV_DEFAULT_AGENT_ID``) at
-# import time (``server.py:126,140``), so ``monkeypatch.setenv`` alone has no
+# import time, so ``monkeypatch.setenv`` alone has no
 # effect — the constants are patched directly via ``monkeypatch.setattr``
 # (design.md decision 7). The ``tool_functions`` fixture patches only
 # ``ENV_BASE_URL`` / ``ENV_API_KEY``; this test patches the two default-scope
@@ -495,20 +576,20 @@ def test_update_memory_rejects_invalid_memory_id(
 # and ``agent_id`` reached the wire in the right payload location:
 #
 # - ``add_memory``: ``user_id`` and ``agent_id`` are top-level keys in the
-#   POST /memories JSON body (``server.py:436-448`` builds ``AddMemoryArgs``
-#   with both, then ``model_dump(exclude_none=True)`` keeps them).
+#   POST /memories JSON body (``add_memory`` builds ``AddMemoryArgs`` with both,
+#   then ``model_dump(exclude_none=True)`` keeps them).
 # - ``get_memories``: ``user_id`` and ``agent_id`` are query params on the
-#   GET /memories request (``server.py:537-545`` builds ``GetMemoriesArgs``
-#   with both, serializes to params, passes to ``list_memories``).
+#   GET /memories request (``get_memories`` builds ``GetMemoriesArgs`` with
+#   both, serializes to params, passes to ``list_memories``).
 # - ``search_memories``: ``user_id`` and ``agent_id`` are inside the
 #   ``filters`` object in the POST /search JSON body
-#   (``server.py:496-506``: ``_with_default_filters`` injects both into the
-#   filters dict, then ``SearchMemoriesArgs`` carries ``filters`` and
+#   (``_with_default_filters`` injects both into the filters dict, then
+#   ``SearchMemoriesArgs`` carries ``filters`` and
 #   ``model_dump(exclude_none=True)`` keeps the nested dict).
 #
 # The ``add_memory`` user_id injection has a conditional:
 # ``user_id=user_id if user_id else (default_user if not (agent_id or run_id)
-# else None)`` (``server.py:439``). With no caller ``agent_id``/``run_id`` and
+# else None)``. With no caller ``agent_id``/``run_id`` and
 # no caller ``user_id``, ``default_user`` is used — this is the case under
 # test. (When the caller supplies ``agent_id`` or ``run_id`` but not
 # ``user_id``, ``user_id`` stays ``None``; that path is not asserted here.)
@@ -554,7 +635,7 @@ def test_default_user_and_agent_injected_into_get_memories_params(
     """``get_memories()`` with no caller scope sends GET /memories query params
     containing both the default ``user_id`` and ``agent_id``.
 
-    ``server.py:537-545``: ``GetMemoriesArgs(user_id=user_id or default_user,
+    In ``get_memories``: ``GetMemoriesArgs(user_id=user_id or default_user,
     agent_id=agent_id or default_agent, ...)`` then
     ``model_dump(exclude_none=True)`` -> params dict. The fake server records
     query params as a flat ``{key: value}`` dict.
@@ -583,7 +664,7 @@ def test_default_user_and_agent_injected_into_search_memories_filters(
     POST /search body whose ``filters`` object contains both the default
     ``user_id`` and ``agent_id``.
 
-    ``server.py:496-506``: ``_with_default_filters(None, default_user,
+    In ``search_memories``: ``_with_default_filters(None, default_user,
     default_agent)`` -> ``{"user_id": default_user, "agent_id":
     default_agent}``; ``SearchMemoriesArgs`` carries that as ``filters``;
     ``model_dump(exclude_none=True)`` keeps the nested ``filters`` dict in the
@@ -606,3 +687,40 @@ def test_default_user_and_agent_injected_into_search_memories_filters(
     filters = json_body["filters"]
     assert filters["user_id"] == _DEFAULT_USER_SENTINEL
     assert filters["agent_id"] == _DEFAULT_AGENT_SENTINEL
+
+
+def test_add_memory_with_agent_id_but_no_user_id_omits_user_id(
+    tool_functions: tuple[dict[str, Any], FakeMem0Config],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``add_memory(text="...", agent_id="a1")`` with no caller ``user_id``
+    sends a POST /memories body that contains ``agent_id`` but NOT ``user_id``.
+
+    Covers the ``else None`` branch of ``add_memory``'s user_id resolution:
+    ``user_id = user_id if user_id else (default_user if not (agent_id or
+    run_id) else None)``. When the caller supplies ``agent_id`` (or ``run_id``)
+    but not ``user_id``, ``user_id`` stays ``None``; ``AddMemoryArgs`` carries
+    it as ``None`` and ``model_dump(exclude_none=True)`` drops it from the
+    payload. This is the documented behavior the task-8.4 block comment calls
+    out as a non-goal for the default-injection tests — asserted here so the
+    branch is not silently untested.
+
+    ``ENV_DEFAULT_USER_ID`` is patched to a sentinel so a leak of the default
+    user into the payload is detectable (the assertion is ``"user_id" not in
+    json_body``, which would fail if the ``else None`` branch regressed to
+    ``else default_user``).
+    """
+    tools, config = tool_functions
+    monkeypatch.setattr(server, "ENV_DEFAULT_USER_ID", _DEFAULT_USER_SENTINEL)
+    config.received.clear()
+
+    tools["add_memory"](text="likes pizza", agent_id="caller-agent", ctx=_STUB_CTX)
+
+    assert len(config.received) == 1
+    entry = config.received[0]
+    assert entry["method"] == "POST"
+    assert entry["path"] == "/memories"
+    json_body = entry["json_body"]
+    assert json_body is not None
+    assert json_body["agent_id"] == "caller-agent"
+    assert "user_id" not in json_body

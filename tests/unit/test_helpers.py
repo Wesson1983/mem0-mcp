@@ -34,7 +34,15 @@ Covers ``_validate_base_url`` (task 3.1) and ``_redact`` (task 3.2):
 - Returns the default for an empty-string env value (treated as unset by the
   ``not raw`` guard).
 
-Tests for ``_with_default_filters`` live in task 3.6.
+``_with_default_filters`` (task 3.6):
+- Injects ``user_id`` when absent (empty filters or filters with other keys).
+- Injects ``agent_id`` when absent and ``default_agent`` is set.
+- Preserves caller-supplied ``user_id`` and ``agent_id`` (caller wins over
+  defaults).
+- Handles ``None`` filters input (returns a fresh dict, does not raise).
+- Does not inject ``agent_id`` when ``default_agent`` is ``None`` or falsy
+  (the guard is ``if default_agent`` truthiness, not ``is not None``).
+- Does not mutate the input ``filters`` dict (``dict(filters)`` copies it).
 """
 
 from __future__ import annotations
@@ -49,6 +57,7 @@ from mem0_mcp_server.server import (
     _redact,
     _validate_base_url,
     _validate_memory_id,
+    _with_default_filters,
 )
 
 
@@ -703,3 +712,170 @@ def test_int_env_returns_default_for_whitespace_and_warns(
     assert warnings, (
         f"expected a WARNING for whitespace-only value; got {caplog.records!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests for ``_with_default_filters`` (task 3.6)
+# ---------------------------------------------------------------------------
+#
+# ``_with_default_filters(filters, default_user, default_agent)`` copies the
+# input (``dict(filters) if filters else {}``), injects ``user_id`` when the
+# key is absent, and injects ``agent_id`` when the key is absent AND
+# ``default_agent`` is truthy.  The ``agent_id`` guard is ``if default_agent``
+# (truthiness), not ``if default_agent is not None`` — so ``None`` and ``""``
+# both suppress injection.  Caller-supplied values always win because the
+# injection is gated on ``"key" not in result``.
+
+
+@pytest.mark.parametrize(
+    ("filters", "default_agent", "expected"),
+    [
+        # Empty filters: only user_id injected (default_agent is None).
+        ({}, None, {"user_id": "u-default"}),
+        # Filters with other keys but no user_id: user_id injected, other keys
+        # preserved.
+        ({"q": "x"}, None, {"q": "x", "user_id": "u-default"}),
+    ],
+    ids=[
+        "empty-filters-injects-user-id",
+        "other-keys-no-user-id-injects-user-id",
+    ],
+)
+def test_with_default_filters_injects_user_id_when_absent(
+    filters: dict[str, object], default_agent: str | None, expected: dict[str, object]
+) -> None:
+    """When ``user_id`` is absent from ``filters`` it is injected with
+    ``default_user``; other keys are preserved.
+
+    ``default_agent`` is ``None`` here so ``agent_id`` is not injected — the
+    ``agent_id`` injection path is covered separately below.  Both an empty
+    dict and a dict with unrelated keys are exercised to confirm the
+    ``"user_id" not in result`` check is key-presence-based, not emptiness-
+    based.
+    """
+    result = _with_default_filters(filters, "u-default", default_agent)
+    assert result == expected
+
+
+def test_with_default_filters_injects_agent_id_when_absent_and_default_set() -> None:
+    """When ``agent_id`` is absent and ``default_agent`` is set (truthy), it is
+    injected alongside ``user_id``.
+
+    This is the positive path for the ``if default_agent and "agent_id" not in
+    result`` guard: both conditions are true, so both keys are injected.
+    """
+    result = _with_default_filters({}, "u-default", "a-default")
+    assert result == {"user_id": "u-default", "agent_id": "a-default"}
+
+
+def test_with_default_filters_preserves_caller_user_id() -> None:
+    """A caller-supplied ``user_id`` wins over ``default_user``; ``agent_id``
+    is still injected because it is absent and ``default_agent`` is set.
+
+    This pins the ``"user_id" not in result`` guard: the caller's value is
+    present, so the default is NOT overwritten.  The assertion checks the exact
+    value (``"u-caller"``, not ``"u-default"``) to prove the caller won, and
+    that ``agent_id`` was still injected (the two injections are independent).
+    """
+    result = _with_default_filters({"user_id": "u-caller"}, "u-default", "a-default")
+    assert result == {"user_id": "u-caller", "agent_id": "a-default"}
+
+
+def test_with_default_filters_preserves_caller_agent_id() -> None:
+    """A caller-supplied ``agent_id`` wins over ``default_agent``; ``user_id``
+    is still injected because it is absent.
+
+    Symmetric to the caller-``user_id`` test: the ``"agent_id" not in result``
+    guard prevents the default from overwriting the caller's value, while the
+    absent ``user_id`` is still injected from ``default_user``.
+    """
+    result = _with_default_filters({"agent_id": "a-caller"}, "u-default", "a-default")
+    assert result == {"user_id": "u-default", "agent_id": "a-caller"}
+
+
+def test_with_default_filters_preserves_both_caller_values() -> None:
+    """When the caller supplies both ``user_id`` and ``agent_id``, neither
+    default is injected — the result equals the input (copied)."""
+    filters = {"user_id": "u-caller", "agent_id": "a-caller"}
+    result = _with_default_filters(filters, "u-default", "a-default")
+    assert result == {"user_id": "u-caller", "agent_id": "a-caller"}
+
+
+def test_with_default_filters_handles_none_filters() -> None:
+    """``None`` filters does not raise; a fresh dict with only ``user_id``
+    injected is returned.
+
+    The ``dict(filters) if filters else {}`` branch handles ``None`` (falsy)
+    by starting from an empty dict, so no ``TypeError`` from ``dict(None)``.
+    With ``default_agent=None``, only ``user_id`` is injected.
+    """
+    result = _with_default_filters(None, "u-default", None)
+    assert result == {"user_id": "u-default"}
+
+
+def test_with_default_filters_none_filters_with_default_agent() -> None:
+    """``None`` filters with a set ``default_agent`` injects both keys,
+    confirming the ``None``-input path still reaches the ``agent_id`` guard."""
+    result = _with_default_filters(None, "u-default", "a-default")
+    assert result == {"user_id": "u-default", "agent_id": "a-default"}
+
+
+@pytest.mark.parametrize(
+    "default_agent",
+    [None, ""],
+    ids=[
+        "default-agent-none",
+        "default-agent-empty-string",
+    ],
+)
+def test_with_default_filters_falsy_default_agent_does_not_inject_agent_id(
+    default_agent: str | None,
+) -> None:
+    """A falsy ``default_agent`` (``None`` or ``""``) does NOT inject
+    ``agent_id``.
+
+    The guard is ``if default_agent`` (truthiness), not ``if default_agent is
+    not None``.  ``None`` is the documented "no agent" sentinel, and ``""`` is
+    falsy so it is also suppressed — a mutant that changed the guard to
+    ``if default_agent is not None`` would inject ``agent_id: ""`` for the
+    empty-string row and fail this assertion.
+    """
+    result = _with_default_filters({}, "u-default", default_agent)
+    assert result == {"user_id": "u-default"}
+    assert "agent_id" not in result
+
+
+def test_with_default_filters_does_not_mutate_input() -> None:
+    """The input ``filters`` dict is not mutated — the function copies it via
+    ``dict(filters)``.
+
+    A snapshot of the input is taken before the call and compared after;
+    additionally the returned dict is a distinct object (``is not`` the input)
+    so mutating the result cannot leak back into the caller's dict.  This
+    guards against a mutant that dropped the ``dict(...)`` copy and mutated
+    ``filters`` in place.
+    """
+    filters = {"q": "x", "user_id": "u-caller"}
+    snapshot = dict(filters)
+    result = _with_default_filters(filters, "u-default", "a-default")
+    # Input is unchanged.
+    assert filters == snapshot
+    # Result is a distinct object, not the same dict mutated in place.
+    assert result is not filters
+    # Mutating the result must not affect the input.
+    result["agent_id"] = "mutated"
+    assert "agent_id" not in filters
+
+
+def test_with_default_filters_returns_fresh_dict_for_none_input() -> None:
+    """For ``None`` input the returned dict is a fresh object (not a shared
+    singleton) so callers can safely mutate it without affecting anyone else.
+
+    Two consecutive calls with ``None`` return distinct objects (``is not``),
+    confirming no cached/shared empty dict is reused.
+    """
+    a = _with_default_filters(None, "u-default", None)
+    b = _with_default_filters(None, "u-default", None)
+    assert a == {"user_id": "u-default"}
+    assert b == {"user_id": "u-default"}
+    assert a is not b

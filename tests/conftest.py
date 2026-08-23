@@ -4,14 +4,16 @@ Task 2.1 (change: test-suite-foundation) defines the fake mem0 OSS HTTP
 server as a Starlette app plus a mutable config object holding the canned
 ``responses`` dict, the ``received`` request log, and the latency settings.
 
-The uvicorn ``Server`` wiring (port-0 binding, startup polling, teardown) is
-added in task 2.2; this file only builds the app + handlers + config and
-exposes the ``fake_mem0_server`` fixture yielding ``(app, config)``. No server
-is started here.
+Task 2.2 wires the app into a real ``uvicorn.Server`` bound to an ephemeral
+port (``port=0``) on a background daemon thread, polls until the socket is
+bound, and yields ``(base_url, config)`` so integration tests can hit the
+fake server over a real socket with ``requests``.
 """
 
 from __future__ import annotations
 
+import logging
+import socket as _socket
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterator
@@ -20,6 +22,7 @@ from typing import Any
 
 import anyio
 import pytest
+import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -239,22 +242,82 @@ def make_fake_mem0_app(config: FakeMem0Config) -> Starlette:
     return Starlette(routes=routes)
 
 
+_BIND_POLL_INTERVAL = 0.01
+_BIND_DEADLINE = 5.0
+_TEARDOWN_JOIN_TIMEOUT = 5.0
+
+_log = logging.getLogger(__name__)
+
+
+def _wait_for_server_bound(
+    server: uvicorn.Server, timeout: float = _BIND_DEADLINE
+) -> _socket.socket:
+    """Poll ``server.servers[0].sockets`` until the listening socket is bound.
+
+    ``uvicorn.Server`` only populates ``servers`` (a ``list[asyncio.Server]``)
+    once its ``startup`` coroutine has called ``loop.create_server``; before
+    that the attribute does not even exist. Each ``asyncio.Server`` exposes a
+    ``sockets`` list once bound. We poll both layers with a short sleep so a
+    slow loop start is tolerated, bounded by ``timeout``.
+
+    On timeout raise ``RuntimeError`` so a startup failure fails fast instead
+    of hanging the suite. Returns the first bound socket (its
+    ``getsockname()[1]`` is the assigned port).
+
+    The ``timeout`` parameter lets tests exercise the timeout path quickly
+    (e.g. ``0.2``) instead of waiting the full 5s deadline.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        servers = getattr(server, "servers", None)
+        if servers:
+            sockets = servers[0].sockets
+            if sockets:
+                # ``asyncio.Server.sockets`` holds ``asyncio.trsock.TransportSocket``
+                # objects, not ``socket.socket`` subclasses (verified on Py 3.14:
+                # ``isinstance(sock, socket.socket)`` is ``False``), so an
+                # ``isinstance`` guard against ``_socket.socket`` would reject
+                # every valid bound socket. The duck-typed object exposes
+                # ``getsockname()`` (all the caller needs); the ``type: ignore``
+                # silences ``no-any-return`` from the ``getattr``-sourced ``Any``.
+                return sockets[0]  # type: ignore[no-any-return]
+        time.sleep(_BIND_POLL_INTERVAL)
+    raise RuntimeError(f"fake mem0 server failed to bind within {timeout:g}s")
+
+
 @pytest.fixture
-def fake_mem0_server() -> Iterator[tuple[Starlette, FakeMem0Config]]:
-    """Yield the ``(app, config)`` pair for the fake mem0 OSS HTTP server.
+def fake_mem0_server() -> Iterator[tuple[str, FakeMem0Config]]:
+    """Yield ``(base_url, config)`` for a real fake mem0 OSS HTTP server.
 
-    Task 2.1 scope: only the Starlette app and config object are produced —
-    no uvicorn server is started. The app can be driven directly via
-    ``starlette.testclient.TestClient`` for shape/import checks.
+    The Starlette app from :func:`make_fake_mem0_app` is served by a
+    ``uvicorn.Server`` bound to ``127.0.0.1`` on an ephemeral port (``port=0``)
+    running on a background daemon thread. We block until the socket is bound
+    (5s deadline, else ``RuntimeError``) so the yielded ``base_url`` is
+    immediately usable with ``requests``. ``config.responses`` and the latency
+    settings can be mutated by the test before issuing requests.
 
-    TODO(task-2.2): replace the yield below with a real ``uvicorn.Server``
-    bound to ``host="127.0.0.1"``, ``port=0`` on a background daemon thread.
-    Poll ``server.servers[0].sockets`` until bound (5s deadline -> raise
-    ``RuntimeError("fake mem0 server failed to bind within 5s")``), read the
-    assigned port via ``getsockname()[1]``, and ``yield (base_url, config)``.
-    In teardown set ``server.should_exit = True`` and
-    ``thread.join(timeout=5)``. Until then, yield ``(app, config)`` directly.
+    In teardown we set ``server.should_exit = True`` and join the thread
+    (5s); if the thread is still alive we log a warning rather than hanging.
     """
     config = FakeMem0Config()
     app = make_fake_mem0_app(config)
-    yield app, config
+    uv_config = uvicorn.Config(
+        app, host="127.0.0.1", port=0, log_level="warning"
+    )
+    server = uvicorn.Server(uv_config)
+
+    thread = threading.Thread(
+        target=server.run, name="fake-mem0-server", daemon=True
+    )
+    thread.start()
+
+    try:
+        sock = _wait_for_server_bound(server, timeout=_BIND_DEADLINE)
+        port = sock.getsockname()[1]
+        base_url = f"http://127.0.0.1:{port}"
+        yield base_url, config
+    finally:
+        server.should_exit = True
+        thread.join(timeout=_TEARDOWN_JOIN_TIMEOUT)
+        if thread.is_alive():
+            _log.warning("fake mem0 server thread did not exit within %ss", _TEARDOWN_JOIN_TIMEOUT)

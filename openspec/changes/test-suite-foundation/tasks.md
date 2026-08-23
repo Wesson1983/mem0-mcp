@@ -76,7 +76,7 @@
 
 ## 12. E2e tests — concurrency (real-latency proof)
 
-- [ ] 12.1 Create `tests/e2e/test_concurrent_read_during_write.py` with `test_read_completes_during_write`: open two MCP sessions. From session A, start `tools/call add_memory` (20-40s real write). `await asyncio.sleep(1)` to let the write enter its blocking I/O. From session B, call `tools/call get_memories` and measure elapsed time. Assert `read_elapsed < 5.0` (read should be seconds, not tens of seconds), `write_elapsed > 10.0` (prove the write was actually slow), and `read_elapsed < write_elapsed / 2` (read didn't wait for write). Verify the test passes when `MEM0_E2E=1` and the full stack is running.
+- [x] 12.1 Create `tests/e2e/test_concurrent_read_during_write.py` with `test_read_completes_during_write`: open two MCP sessions. From session A, start `tools/call add_memory` (20-40s real write). `await asyncio.sleep(1)` to let the write enter its blocking I/O. From session B, call `tools/call get_memories` and measure elapsed time. Assert `read_elapsed < 5.0` (read should be seconds, not tens of seconds), `write_elapsed > 10.0` (prove the write was actually slow), and `read_elapsed < write_elapsed / 2` (read didn't wait for write). Verify the test passes when `MEM0_E2E=1` and the full stack is running.
 
 ## 13. CI workflow
 

@@ -12,7 +12,7 @@
 ## 3. Unit tests — pure helpers
 
 - [x] 3.1 Create `tests/unit/test_helpers.py` with tests for `_validate_base_url`: accepts `http://localhost:8888`, `https://api.example.com`, `http://127.0.0.1`, `http://host.docker.internal`; rejects missing scheme (`localhost:8888`), non-HTTP scheme (`ftp://...`), non-local host without HTTPS (`http://api.example.com`); strips trailing slash. Verify all assertions pass.
-- [ ] 3.2 Add tests for `_redact`: redacts `api_key` patterns, `token` patterns, `bearer` tokens, `authorization` headers; truncates to the limit; leaves non-sensitive text unchanged. Verify all assertions pass.
+- [x] 3.2 Add tests for `_redact`: redacts `api_key` patterns, `token` patterns, `bearer` tokens, `authorization` headers; truncates to the limit; leaves non-sensitive text unchanged. Verify all assertions pass.
 - [ ] 3.3 Add tests for `_validate_memory_id`: accepts alphanumeric + `_` + `-`; rejects empty string, slashes, spaces, special characters. Verify all assertions pass.
 - [ ] 3.4 Add tests for `_error`: returns `{"error": code, "detail": detail}` without status; returns `{"error": code, "detail": detail, "status": status}` with status. Verify all assertions pass.
 - [ ] 3.5 Add tests for `_int_env`: returns the env value when set and valid; returns the default when unset; returns the default when set to a non-integer (and logs a warning). Use `monkeypatch.setenv`/`monkeypatch.delenv`. Verify all assertions pass.

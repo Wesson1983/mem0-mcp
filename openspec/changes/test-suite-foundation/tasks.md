@@ -32,7 +32,7 @@
 ## 6. Unit tests — schemas
 
 - [x] 6.1 Create `tests/unit/test_schemas.py` with tests for `AddMemoryArgs`: accepts `text` or `messages`; `model_dump(exclude_none=True)` omits unset optional fields; `ToolMessage` validates `role`/`content` structure. Verify all assertions pass.
-- [ ] 6.2 Add tests for `SearchMemoriesArgs`, `GetMemoriesArgs`, `DeleteAllArgs`, `DeleteEntitiesArgs`, `UpdateMemoryArgs`: each schema accepts valid inputs; `model_dump(exclude_none=True)` produces the expected payload shape (flat key-value, no nested wrappers for None fields). Verify all assertions pass.
+- [x] 6.2 Add tests for `SearchMemoriesArgs`, `GetMemoriesArgs`, `DeleteAllArgs`, `DeleteEntitiesArgs`, `UpdateMemoryArgs`: each schema accepts valid inputs; `model_dump(exclude_none=True)` produces the expected payload shape (flat key-value, no nested wrappers for None fields). Verify all assertions pass.
 
 ## 7. Integration tests — `Mem0OSSClient`
 

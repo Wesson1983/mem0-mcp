@@ -1,4 +1,4 @@
-"""Unit tests for Pydantic schemas (task 6.1, change: test-suite-foundation).
+"""Unit tests for Pydantic schemas (tasks 6.1/6.2, change: test-suite-foundation).
 
 Task 6.1 covers ``AddMemoryArgs`` and ``ToolMessage`` (``schemas.py:22-69``):
 
@@ -27,6 +27,15 @@ Task 6.1 covers ``AddMemoryArgs`` and ``ToolMessage`` (``schemas.py:22-69``):
   ``ToolMessage`` instances), and a malformed dict (missing ``content``)
   raises ``ValidationError`` whose ``loc`` points at
   ``('messages', 0, 'content')``.
+
+Task 6.2 covers ``SearchMemoriesArgs``, ``GetMemoriesArgs``, ``DeleteAllArgs``,
+``DeleteEntitiesArgs``, and ``UpdateMemoryArgs`` (``schemas.py:72-118``): each
+schema accepts valid inputs, and ``model_dump(exclude_none=True)`` produces the
+expected flat key-value payload shape (no nested wrappers for ``None`` fields).
+The ``top_k`` bounds (``ge=1, le=1000``) on ``SearchMemoriesArgs`` and
+``GetMemoriesArgs`` are pinned at both boundaries, and ``UpdateMemoryArgs``
+shares ``AddMemoryArgs``' ``expiration_date`` validator (covered by a focused
+reject case rather than re-deriving the full matrix from 6.1).
 """
 
 from __future__ import annotations
@@ -34,7 +43,15 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from mem0_mcp_server.schemas import AddMemoryArgs, ToolMessage
+from mem0_mcp_server.schemas import (
+    AddMemoryArgs,
+    DeleteAllArgs,
+    DeleteEntitiesArgs,
+    GetMemoriesArgs,
+    SearchMemoriesArgs,
+    ToolMessage,
+    UpdateMemoryArgs,
+)
 
 # ---------------------------------------------------------------------------
 # Task 6.1 — ``ToolMessage``
@@ -473,3 +490,404 @@ def test_add_memory_args_rejects_messages_with_non_string_content() -> None:
     errors = exc_info.value.errors()
     assert errors, "ValidationError produced no error entries"
     assert errors[0]["loc"] == ("messages", 0, "content")
+
+
+# ===========================================================================
+# Task 6.2 — remaining schemas
+# ===========================================================================
+#
+# ``SearchMemoriesArgs``, ``GetMemoriesArgs``, ``UpdateMemoryArgs``,
+# ``DeleteAllArgs``, ``DeleteEntitiesArgs`` (``schemas.py:72-118``). Each test
+# covers: (a) accepts valid inputs, (b) ``model_dump(exclude_none=True)``
+# produces a flat key-value payload with no nested wrappers for ``None``
+# fields. Where a schema has bounded fields (``top_k`` ``ge=1, le=1000``) or
+# a shared validator (``UpdateMemoryArgs.expiration_date``), the boundaries
+# and the reject path are pinned.
+#
+# ``# type: ignore[call-arg]`` is required on Pydantic model constructions
+# where not all fields are supplied (e.g. ``SearchMemoriesArgs(query="x")``
+# omits the 5 optional fields). The pydantic mypy plugin is unavailable in
+# this environment (incompatible with the installed mypy version), so strict
+# mypy raises "missing named argument" false positives for Pydantic's
+# runtime defaults. When *all* fields are supplied, ``call-arg`` does not
+# fire and the ignore is omitted (mypy flags it as unused if present).
+
+
+# ---------------------------------------------------------------------------
+# Task 6.2 — ``SearchMemoriesArgs``
+# ---------------------------------------------------------------------------
+#
+# ``query`` is the only required field (``Field(..., ...)``); ``filters``,
+# ``top_k``, ``threshold``, ``explain``, ``show_expired`` are all ``Optional``
+# with ``None`` defaults. ``top_k`` is bounded ``ge=1, le=1000``
+# (``schemas.py:78``).
+
+
+def test_search_memories_args_accepts_query_only() -> None:
+    """``SearchMemoriesArgs(query=...)`` with no other fields validates, and
+    ``model_dump(exclude_none=True)`` returns ``{"query": ...}`` only — every
+    other field is ``Optional`` with a ``None`` default and is excluded.
+
+    ``query`` is the sole required field (``schemas.py:73``); the dump is
+    flat (no nested wrapper), matching the shape ``search_memories`` sends to
+    the OSS server (``server.py:505-506``).
+    """
+    args = SearchMemoriesArgs(query="pizza")  # type: ignore[call-arg]
+
+    assert args.query == "pizza"
+    assert args.filters is None
+    assert args.top_k is None
+    assert args.threshold is None
+    assert args.explain is None
+    assert args.show_expired is None
+    assert args.model_dump(exclude_none=True) == {"query": "pizza"}
+
+
+def test_search_memories_args_accepts_all_fields() -> None:
+    """Setting every field produces a flat dump with exactly those keys.
+
+    ``filters`` is a dict and survives ``exclude_none=True`` as a nested dict
+    (not a wrapper object) — the payload shape is flat key-value at the top
+    level, with ``filters`` as the only nested value. ``show_expired=False``
+    is kept (falsy but set), pinning the ``is None``-only exclusion.
+    """
+    args = SearchMemoriesArgs(
+        query="pizza",
+        filters={"user_id": "u", "agent_id": "a"},
+        top_k=5,
+        threshold=0.5,
+        explain=True,
+        show_expired=False,
+    )
+
+    assert args.model_dump(exclude_none=True) == {
+        "query": "pizza",
+        "filters": {"user_id": "u", "agent_id": "a"},
+        "top_k": 5,
+        "threshold": 0.5,
+        "explain": True,
+        "show_expired": False,
+    }
+
+
+def test_search_memories_args_rejects_missing_query() -> None:
+    """Omitting the required ``query`` field raises ``ValidationError`` whose
+    error ``loc`` is ``('query',)``.
+
+    ``query`` uses ``Field(..., ...)`` (``schemas.py:73``), so it is required.
+    The ``loc`` is asserted exactly so a regression that renamed the field or
+    made it optional would be caught.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        SearchMemoriesArgs()  # type: ignore[call-arg]
+
+    errors = exc_info.value.errors()
+    assert errors, "ValidationError produced no error entries"
+    assert errors[0]["loc"] == ("query",)
+
+
+@pytest.mark.parametrize(
+    "top_k",
+    [0, 1001, -1],
+    ids=["zero-below-min", "above-max", "negative"],
+)
+def test_search_memories_args_rejects_top_k_out_of_bounds(top_k: int) -> None:
+    """``top_k`` must satisfy ``ge=1, le=1000`` (``schemas.py:78``); values
+    outside that range raise ``ValidationError`` pointing at ``('top_k',)``.
+
+    Both boundaries are pinned: ``0`` (just below ``ge=1``), ``1001`` (just
+    above ``le=1000``), and ``-1`` (negative). A regression that dropped the
+    bounds or widened them would accept these and fail.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        SearchMemoriesArgs(query="x", top_k=top_k)  # type: ignore[call-arg]
+
+    errors = exc_info.value.errors()
+    assert errors, "ValidationError produced no error entries"
+    assert errors[0]["loc"] == ("top_k",)
+
+
+@pytest.mark.parametrize("top_k", [1, 1000], ids=["min-1", "max-1000"])
+def test_search_memories_args_accepts_top_k_boundaries(top_k: int) -> None:
+    """``top_k`` at exactly the boundaries (``1`` and ``1000``) is accepted.
+
+    ``ge=1`` and ``le=1000`` are inclusive, so the boundary values validate.
+    This pins the inclusivity so a regression to ``gt``/``lt`` (exclusive)
+    would reject the boundary and fail.
+    """
+    args = SearchMemoriesArgs(query="x", top_k=top_k)  # type: ignore[call-arg]
+
+    assert args.top_k == top_k
+    assert args.model_dump(exclude_none=True) == {"query": "x", "top_k": top_k}
+
+
+# ---------------------------------------------------------------------------
+# Task 6.2 — ``GetMemoriesArgs``
+# ---------------------------------------------------------------------------
+#
+# Every field is ``Optional`` with a ``None`` default (``schemas.py:89-96``);
+# the empty construction is valid and dumps to ``{}``. ``top_k`` is bounded
+# ``ge=1, le=1000`` (``schemas.py:93``), same as ``SearchMemoriesArgs``.
+
+
+def test_get_memories_args_accepts_empty() -> None:
+    """``GetMemoriesArgs()`` with no fields set validates and dumps to ``{}``.
+
+    All five fields (``user_id``, ``agent_id``, ``run_id``, ``top_k``,
+    ``show_expired``) are ``Optional`` with ``None`` defaults, so the empty
+    construction is valid and ``exclude_none=True`` produces an empty dict.
+    This is the shape ``get_memories`` sends when no filters are supplied
+    (``server.py:537-545``).
+    """
+    args = GetMemoriesArgs()  # type: ignore[call-arg]
+
+    assert args.user_id is None
+    assert args.agent_id is None
+    assert args.run_id is None
+    assert args.top_k is None
+    assert args.show_expired is None
+    assert args.model_dump(exclude_none=True) == {}
+
+
+def test_get_memories_args_accepts_all_fields() -> None:
+    """Setting every field produces a flat dump with exactly those keys.
+
+    The dump is flat key-value (no nested wrappers); ``show_expired=True`` is
+    kept (set, not ``None``). This is the realistic ``get_memories`` payload
+    (``server.py:537-545``).
+    """
+    args = GetMemoriesArgs(
+        user_id="u",
+        agent_id="a",
+        run_id="r",
+        top_k=10,
+        show_expired=True,
+    )
+
+    assert args.model_dump(exclude_none=True) == {
+        "user_id": "u",
+        "agent_id": "a",
+        "run_id": "r",
+        "top_k": 10,
+        "show_expired": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "top_k",
+    [0, 1001, -1],
+    ids=["zero-below-min", "above-max", "negative"],
+)
+def test_get_memories_args_rejects_top_k_out_of_bounds(top_k: int) -> None:
+    """``top_k`` must satisfy ``ge=1, le=1000`` (``schemas.py:93``); out-of-
+    range values raise ``ValidationError`` pointing at ``('top_k',)``.
+
+    Same bound as ``SearchMemoriesArgs``; pinned here independently so a
+    regression that changed one schema's bound without the other is caught.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        GetMemoriesArgs(top_k=top_k)  # type: ignore[call-arg]
+
+    errors = exc_info.value.errors()
+    assert errors, "ValidationError produced no error entries"
+    assert errors[0]["loc"] == ("top_k",)
+
+
+@pytest.mark.parametrize("top_k", [1, 1000], ids=["min-1", "max-1000"])
+def test_get_memories_args_accepts_top_k_boundaries(top_k: int) -> None:
+    """``top_k`` at exactly the boundaries (``1`` and ``1000``) is accepted
+    (inclusive bounds).
+    """
+    args = GetMemoriesArgs(top_k=top_k)  # type: ignore[call-arg]
+
+    assert args.top_k == top_k
+    assert args.model_dump(exclude_none=True) == {"top_k": top_k}
+
+
+# ---------------------------------------------------------------------------
+# Task 6.2 — ``UpdateMemoryArgs``
+# ---------------------------------------------------------------------------
+#
+# All fields optional (``schemas.py:99-106``); shares ``_validate_iso_date``
+# with ``AddMemoryArgs`` via ``field_validator("expiration_date")``
+# (``schemas.py:106``). The empty construction is valid (the "nothing to
+# update" check is in the tool function, ``server.py:621-626``, not the
+# schema — covered by task 8.3).
+
+
+def test_update_memory_args_accepts_empty() -> None:
+    """``UpdateMemoryArgs()`` with no fields set validates and dumps to ``{}``.
+
+    All three fields (``text``, ``metadata``, ``expiration_date``) are
+    ``Optional`` with ``None`` defaults. The schema does not reject the empty
+    case — the ``update_memory`` tool function does, returning
+    ``_error("nothing_to_update", ...)`` (``server.py:622-626``). That
+    tool-level error path is task 8.3's scope; here we pin that the schema
+    itself accepts the empty construction.
+    """
+    args = UpdateMemoryArgs()  # type: ignore[call-arg]
+
+    assert args.text is None
+    assert args.metadata is None
+    assert args.expiration_date is None
+    assert args.model_dump(exclude_none=True) == {}
+
+
+def test_update_memory_args_accepts_all_fields() -> None:
+    """Setting every field produces a flat dump with exactly those keys.
+
+    ``metadata`` survives as a nested dict (not a wrapper); the payload is
+    flat at the top level. This is the realistic ``update_memory`` body shape
+    (``server.py:620-621``).
+    """
+    args = UpdateMemoryArgs(
+        text="new text",
+        metadata={"key": "value"},
+        expiration_date="2026-08-23",
+    )
+
+    assert args.model_dump(exclude_none=True) == {
+        "text": "new text",
+        "metadata": {"key": "value"},
+        "expiration_date": "2026-08-23",
+    }
+
+
+def test_update_memory_args_rejects_invalid_expiration_date() -> None:
+    """``UpdateMemoryArgs`` shares ``_validate_iso_date`` with
+    ``AddMemoryArgs`` (``schemas.py:106``); a non-``YYYY-MM-DD`` value raises
+    ``ValidationError`` with the same message.
+
+    This is a focused reject case (one invalid value) rather than re-deriving
+    the full accept/reject matrix from task 6.1's ``AddMemoryArgs`` tests —
+    the validator is the same ``_validate_iso_date`` function, so the matrix
+    is already pinned there. Here we only confirm the validator is wired into
+    ``UpdateMemoryArgs`` at all.
+    """
+    with pytest.raises(ValidationError, match="expiration_date must be in YYYY-MM-DD format"):
+        UpdateMemoryArgs(expiration_date="not-a-date")  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# Task 6.2 — ``DeleteAllArgs``
+# ---------------------------------------------------------------------------
+#
+# All fields optional (``schemas.py:109-112``); the empty construction is
+# valid (the "no scope" check is in the tool function via ``DeleteEntitiesArgs``,
+# not ``DeleteAllArgs`` — ``delete_all_memories`` defaults ``user_id`` from
+# ``_resolve_settings``, ``server.py:564-570``).
+
+
+def test_delete_all_args_accepts_empty() -> None:
+    """``DeleteAllArgs()`` with no fields set validates and dumps to ``{}``.
+
+    All three fields (``user_id``, ``agent_id``, ``run_id``) are ``Optional``
+    with ``None`` defaults. The schema does not require any scope — the
+    ``delete_all_memories`` tool function defaults ``user_id`` from
+    ``_resolve_settings`` (``server.py:564-570``), so an empty
+    ``DeleteAllArgs`` is a valid intermediate that the tool populates.
+    """
+    args = DeleteAllArgs()  # type: ignore[call-arg]
+
+    assert args.user_id is None
+    assert args.agent_id is None
+    assert args.run_id is None
+    assert args.model_dump(exclude_none=True) == {}
+
+
+def test_delete_all_args_accepts_all_fields() -> None:
+    """Setting every field produces a flat dump with exactly those keys."""
+    args = DeleteAllArgs(
+        user_id="u",
+        agent_id="a",
+        run_id="r",
+    )
+
+    assert args.model_dump(exclude_none=True) == {
+        "user_id": "u",
+        "agent_id": "a",
+        "run_id": "r",
+    }
+
+
+def test_delete_all_args_accepts_partial_fields() -> None:
+    """Setting a subset of fields produces a flat dump with only those keys;
+    the unset fields are absent (``exclude_none=True``).
+
+    Setting only ``user_id`` yields ``{"user_id": ...}`` — ``agent_id`` and
+    ``run_id`` are excluded. This pins the partial-population shape.
+    """
+    args = DeleteAllArgs(user_id="u")  # type: ignore[call-arg]
+
+    assert args.model_dump(exclude_none=True) == {"user_id": "u"}
+
+
+# ---------------------------------------------------------------------------
+# Task 6.2 — ``DeleteEntitiesArgs``
+# ---------------------------------------------------------------------------
+#
+# All fields optional (``schemas.py:115-118``); the empty construction is
+# valid (the "no scope" check is in the tool function, ``server.py:664-680``,
+# not the schema — covered by task 8.3). ``DeleteEntitiesArgs`` is structurally
+# identical to ``DeleteAllArgs`` (same three optional scope fields) but is
+# tested independently because it is a distinct schema — a regression that
+# diverged the two (e.g. adding a required field to one) would be caught.
+
+
+def test_delete_entities_args_accepts_empty() -> None:
+    """``DeleteEntitiesArgs()`` with no fields set validates and dumps to
+    ``{}``.
+
+    All three fields (``user_id``, ``agent_id``, ``run_id``) are ``Optional``
+    with ``None`` defaults. The schema does not require any scope — the
+    ``delete_entities`` tool function enforces "at least one" via
+    ``_error("scope_missing", ...)`` (``server.py:676-680``), which is task
+    8.3's scope. Here we pin that the schema itself accepts the empty
+    construction so the tool function is the sole enforcer.
+    """
+    args = DeleteEntitiesArgs()  # type: ignore[call-arg]
+
+    assert args.user_id is None
+    assert args.agent_id is None
+    assert args.run_id is None
+    assert args.model_dump(exclude_none=True) == {}
+
+
+def test_delete_entities_args_accepts_all_fields() -> None:
+    """Setting every field produces a flat dump with exactly those keys."""
+    args = DeleteEntitiesArgs(
+        user_id="u",
+        agent_id="a",
+        run_id="r",
+    )
+
+    assert args.model_dump(exclude_none=True) == {
+        "user_id": "u",
+        "agent_id": "a",
+        "run_id": "r",
+    }
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"user_id": "u"}, {"user_id": "u"}),
+        ({"agent_id": "a"}, {"agent_id": "a"}),
+        ({"run_id": "r"}, {"run_id": "r"}),
+    ],
+    ids=["user-only", "agent-only", "run-only"],
+)
+def test_delete_entities_args_accepts_single_scope(
+    kwargs: dict[str, str], expected: dict[str, str]
+) -> None:
+    """Setting exactly one scope field produces a flat dump with only that
+    key; the other two are absent.
+
+    ``delete_entities`` picks the first non-``None`` scope
+    (``server.py:664-675``); each single-scope shape is a valid input to that
+    selection. Parametrized across the three scope fields so a regression
+    that broke one (e.g. renamed a field) is isolated.
+    """
+    args = DeleteEntitiesArgs(**kwargs)
+
+    assert args.model_dump(exclude_none=True) == expected

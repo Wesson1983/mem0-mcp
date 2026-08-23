@@ -45,19 +45,12 @@ import pytest
 
 from mem0_mcp_server import server
 from mem0_mcp_server.server import _resolve_settings
+from tests.conftest import StubContext
 
-
-class _StubContext:
-    """Minimal stand-in for ``mcp.server.fastmcp.Context``.
-
-    The real ``Context`` exposes a ``session_config`` attribute (a dict or
-    ``None``). ``_resolve_settings`` only touches ``ctx.session_config`` via
-    ``getattr`` (``server.py:183``), so a bare attribute holder is sufficient
-    and avoids constructing a real ``Context`` (which requires a live session).
-    """
-
-    def __init__(self, session_config: object) -> None:
-        self.session_config = session_config
+# Alias kept so the parametrize/ids and call sites below read as before; the
+# stub itself now lives in ``tests/conftest.py`` (shared with the integration
+# suite) so the two modules do not maintain divergent copies.
+_StubContext = StubContext
 
 
 class _StubSessionConfigAttrs:

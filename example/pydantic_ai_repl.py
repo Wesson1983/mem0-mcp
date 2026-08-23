@@ -1,9 +1,9 @@
 """Standalone Pydantic AI REPL wired to the Mem0 MCP server.
 
-Run this script from the repo root after installing the package (e.g.,
-`pip install -e .[smithery]`). It defaults to the bundled `example/config.json`
-so you can connect to the local `mem0_mcp_server.server` entry point without
-touching `uvx`.
+Run this script from the repo root after installing the package plus the
+REPL's own deps: `pip install -e .` and `pip install pydantic-ai-slim[mcp]`.
+It defaults to the bundled `example/config.json` so you can connect to the
+local `mem0_mcp_server.server` entry point without touching `uvx`.
 """
 
 from __future__ import annotations

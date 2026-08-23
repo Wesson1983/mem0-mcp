@@ -3,7 +3,7 @@
 The tool functions (``add_memory``, ``search_memories``, ``get_memories``,
 ``delete_all_memories``, ``list_entities``, ``get_memory``, ``get_memory_history``,
 ``update_memory``, ``delete_memory``, ``delete_entities``) are closures defined
-inside ``create_server()`` (the ``@smithery.server``-decorated factory) and are therefore NOT importable
+inside ``create_server()`` and are therefore NOT importable
 module attributes. To call them directly from tests we instantiate the
 ``FastMCP`` server via ``create_server()`` and extract the underlying callables
 from its tool manager's tool registry (``server._tool_manager._tools[name].fn``)
@@ -40,18 +40,16 @@ from mcp.server.fastmcp import FastMCP
 
 from mem0_mcp_server import server
 from mem0_mcp_server.server import clear_client_cache, create_server
-from tests.conftest import FakeMem0Config
+from tests.conftest import FakeMem0Config, StubContext
 
-# The 10 tool callables are extracted from the inner ``FastMCP``'s tool
-# registry (``ToolManager._tools[name].fn``). ``create_server()`` is decorated
-# with ``@smithery.server(...)`` and returns a ``SmitheryFastMCP`` wrapper that
-# does NOT subclass ``FastMCP`` (mro ``SmitheryFastMCP -> object``); it holds
-# the real ``FastMCP`` as ``_fastmcp``. Reaching ``_tool_manager`` through
-# ``_fastmcp`` keeps us on one layer of private API (FastMCP's own
-# ``ToolManager._tools``, stable under the ``mcp[cli]<2.0.0`` pin) instead of
-# two (smithery's wrapper + FastMCP). The guard below turns a future smithery
-# or mcp release that reshapes either layer into a clear, actionable error
-# instead of an opaque ``AttributeError`` mid-suite.
+# The 10 tool callables are extracted from the ``FastMCP`` tool registry
+# (``ToolManager._tools[name].fn``). ``create_server()`` returns the
+# ``FastMCP`` instance directly; each ``Tool`` in the registry exposes ``.fn``
+# (the original function the ``@server.tool`` decorator wrapped), which we call
+# directly to bypass the MCP transport layer and FastMCP argument coercion.
+# The guard below turns a future mcp release that reshapes the
+# ``ToolManager._tools`` layout into a clear, actionable error instead of an
+# opaque ``AttributeError`` mid-suite.
 _EXPECTED_TOOL_NAMES = frozenset({
     "add_memory", "search_memories", "get_memories", "delete_all_memories",
     "list_entities", "get_memory", "get_memory_history", "update_memory",
@@ -59,29 +57,26 @@ _EXPECTED_TOOL_NAMES = frozenset({
 })
 
 
-def _extract_tool_callables(wrapped_server: Any) -> dict[str, Any]:
-    """Pull the 10 underlying tool callables from the inner ``FastMCP``.
+def _extract_tool_callables(fastmcp_server: Any) -> dict[str, Any]:
+    """Pull the 10 underlying tool callables from the ``FastMCP`` instance.
 
-    ``wrapped_server`` is the value returned by ``create_server()`` — a
-    ``SmitheryFastMCP`` whose ``_fastmcp`` attribute is the real ``FastMCP``
-    instance. Each ``Tool`` in the registry exposes ``.fn`` (the original
-    function the ``@server.tool`` decorator wrapped), which we call directly
-    to bypass the MCP transport layer and FastMCP argument coercion.
+    ``fastmcp_server`` is the value returned by ``create_server()`` — a
+    ``FastMCP`` instance. Each ``Tool`` in the registry exposes ``.fn`` (the
+    original function the ``@server.tool`` decorator wrapped), which we call
+    directly to bypass the MCP transport layer and FastMCP argument coercion.
     """
-    inner = getattr(wrapped_server, "_fastmcp", None)
-    if not isinstance(inner, FastMCP):
+    if not isinstance(fastmcp_server, FastMCP):
         raise TypeError(
-            f"create_server() did not return a SmitheryFastMCP wrapping a "
-            f"FastMCP (got {type(wrapped_server).__name__}; "
-            f"expected a SmitheryFastMCP with a ._fastmcp FastMCP attribute). "
-            f"The smithery>=0.4.2 wrapper layout may have changed — pin or "
-            f"update smithery and revisit this extraction."
+            f"create_server() did not return a FastMCP "
+            f"(got {type(fastmcp_server).__name__}; expected FastMCP). "
+            f"The mcp[cli]<2.0.0 layout may have changed — pin or update mcp "
+            f"and revisit this extraction."
         )
-    tool_manager = getattr(inner, "_tool_manager", None)
+    tool_manager = getattr(fastmcp_server, "_tool_manager", None)
     tools_map = getattr(tool_manager, "_tools", None) if tool_manager is not None else None
     if not isinstance(tools_map, dict):
         raise TypeError(
-            f"Inner FastMCP._tool_manager._tools is not a dict "
+            f"FastMCP._tool_manager._tools is not a dict "
             f"(got {type(tools_map).__name__}). The mcp[cli]<2.0.0 internal "
             f"ToolManager layout may have changed — pin or update mcp and "
             f"revisit this extraction."
@@ -97,25 +92,11 @@ def _extract_tool_callables(wrapped_server: Any) -> dict[str, Any]:
 _API_KEY = "test-tool-functions-api-key-aaaaaaaa"
 
 
-class _StubContext:
-    """Minimal stand-in for ``mcp.server.fastmcp.Context``.
-
-    The tool functions only touch ``ctx`` via ``getattr(ctx, "session_config",
-    None)`` inside ``_resolve_settings`` (its ``session_config = getattr(ctx,
-    "session_config", None)`` line). A bare attribute
-    holder with ``session_config = None`` is sufficient and avoids constructing
-    a real ``Context`` (which requires a live MCP session). Mirrors the stub in
-    ``tests/unit/test_resolve_settings.py``.
-    """
-
-    def __init__(self, session_config: object = None) -> None:
-        self.session_config = session_config
-
-
 # Sentinel ``Context`` reused across the happy-path tests. ``session_config`` is
 # ``None`` so ``_resolve_settings`` follows the env-only path and reads the
-# patched module constants.
-_STUB_CTX = _StubContext(session_config=None)
+# patched module constants. The stub itself lives in ``tests/conftest.py`` and
+# is shared with ``tests/unit/test_resolve_settings.py``.
+_STUB_CTX = StubContext(session_config=None)
 
 
 @pytest.fixture(autouse=True)
@@ -155,16 +136,15 @@ def tool_functions(
     callable (``Tool.fn``) and ``config`` is the fake server's mutable config
     (so tests can override ``responses`` per-test and read ``received`` for the
     echo assertions in task 8.4). Tool extraction goes through
-    :func:`_extract_tool_callables`, which reaches the inner ``FastMCP`` via
-    the ``SmitheryFastMCP._fastmcp`` attribute and fails with a clear message
-    if the smithery/mcp wrapper layout changes.
+    :func:`_extract_tool_callables`, which reads the ``FastMCP`` tool registry
+    directly and fails with a clear message if the mcp layout changes.
     """
     base_url, config = fake_mem0_server
     monkeypatch.setattr(server, "ENV_BASE_URL", base_url)
     monkeypatch.setattr(server, "ENV_API_KEY", _API_KEY)
 
-    wrapped = create_server()
-    tools = _extract_tool_callables(wrapped)
+    fastmcp = create_server()
+    tools = _extract_tool_callables(fastmcp)
     return tools, config
 
 

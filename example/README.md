@@ -40,13 +40,6 @@ export MEM0_MCP_CONFIG_SERVER=mem0-docker
 python example/pydantic_ai_repl.py
 ```
 
-### Smithery Remote Server
-```bash
-export MEM0_MCP_CONFIG_PATH=example/config-smithery.json
-export MEM0_MCP_CONFIG_SERVER=mem0-memory-mcp
-python example/pydantic_ai_repl.py
-```
-
 ## What Happens
 
 1. The script loads the configuration from `example/config.json` by default
@@ -66,6 +59,5 @@ python example/pydantic_ai_repl.py
 
 - `config.json` - Local server (default)
 - `docker-config.json` - Connect to Docker container on port 8080
-- `config-smithery.json` - Connect to Smithery remote server
 
 You can create custom configs by copying and modifying these files.

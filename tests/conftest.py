@@ -137,6 +137,20 @@ class FakeMem0Config:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
+class StubContext:
+    """Minimal stand-in for ``mcp.server.fastmcp.Context``.
+
+    The tool functions and ``_resolve_settings`` only touch ``ctx`` via
+    ``getattr(ctx, "session_config", None)``. A bare attribute holder with
+    ``session_config`` is sufficient and avoids constructing a real
+    ``Context`` (which requires a live MCP session). Shared across the
+    unit and integration test modules so the stub does not drift.
+    """
+
+    def __init__(self, session_config: object = None) -> None:
+        self.session_config = session_config
+
+
 def _serve_blocking(
     config: FakeMem0Config,
     route_key: tuple[str, str],

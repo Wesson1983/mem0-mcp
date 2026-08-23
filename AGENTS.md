@@ -78,6 +78,17 @@ not what the MCP layer does.
 (`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`), which this
 server's `FastMCP` usage depends on.
 
+## Transport security
+
+`create_server()` constructs `TransportSecuritySettings(enable_dns_rebinding_protection=False)`.
+The MCP lib default for `enable_dns_rebinding_protection` is `True`, so this
+line is load-bearing: it disables DNS rebinding protection so the HTTP entry
+point (`http_entry.py`) accepts requests against any `Host`/`Origin`. The
+server is intended to run behind a reverse proxy or in a local Docker
+container, not exposed directly to the internet. Do not delete the line
+without replacing it with an explicit `allowed_hosts`/`allowed_origins`
+allowlist.
+
 ## Environment variables
 
 - `MEM0_API_KEY` (required) — OSS API key from the dashboard.

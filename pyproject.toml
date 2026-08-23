@@ -30,14 +30,12 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries",
-    "Typing :: Typed",
 ]
 
 dependencies = [
     "mcp[cli]>=1.6.0,<2.0.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
-    "smithery>=0.4.2",
 ]
 
 [project.urls]
@@ -46,8 +44,6 @@ Repository = "https://github.com/mem0ai/mem0-mcp"
 Documentation = "https://docs.mem0.ai"
 
 [project.optional-dependencies]
-agent = ["pydantic-ai-slim[mcp]>=1.14.1", "python-dotenv>=1.2.1"]
-mem0-sdk = ["mem0ai>=1.0.1"]
 dev = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.23.0",
@@ -65,23 +61,9 @@ dev = [
 
 [project.scripts]
 mem0-mcp-server = "mem0_mcp_server.server:main"
-dev = "smithery.cli.dev:main"
-start = "smithery.cli.start:main"
-playground = "smithery.cli.playground:main"
-
-[project.entry-points."mcp.servers"]
-mem0 = "mem0_mcp_server:mcp.json"
-
-[tool.smithery]
-server = "mem0_mcp_server.server:create_server"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mem0_mcp_server"]
-
-[tool.hatch.build.targets.wheel.shared-data]
-"src/mem0_mcp_server/mcp.json" = "share/mcp/servers/mem0-mcp-server.json"
-"src/mem0_mcp_server/py.typed" = "mem0_mcp_server/py.typed"
-"src/mem0_mcp_server/config.json" = "share/mcp/configs/mem0-mcp-server.json"
 
 [tool.ruff]
 target-version = "py310"

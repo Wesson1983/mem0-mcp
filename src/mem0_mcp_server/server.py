@@ -15,7 +15,7 @@ import os
 import re
 import urllib.parse
 from importlib.metadata import PackageNotFoundError, version
-from typing import Annotated, Any, Callable, Optional, TypeVar
+from typing import Annotated, Any
 
 import requests
 from dotenv import load_dotenv
@@ -26,7 +26,6 @@ from pydantic import Field, ValidationError
 try:  # Support both package and script runs.
     from .schemas import (
         AddMemoryArgs,
-        ConfigSchema,
         DeleteAllArgs,
         DeleteEntitiesArgs,
         GetMemoriesArgs,
@@ -37,7 +36,6 @@ try:  # Support both package and script runs.
 except ImportError:  # pragma: no cover - fallback for script execution
     from schemas import (  # type: ignore[no-redef]
         AddMemoryArgs,
-        ConfigSchema,
         DeleteAllArgs,
         DeleteEntitiesArgs,
         GetMemoriesArgs,
@@ -50,23 +48,6 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(message)s")
 logger = logging.getLogger("mem0_mcp_server")
-
-T = TypeVar("T")
-
-try:
-    from smithery.decorators import smithery
-except ImportError:  # pragma: no cover - Smithery optional
-
-    class _SmitheryFallback:
-        @staticmethod
-        def server(*args, **kwargs):  # type: ignore[misc]
-            def decorator(func: Callable[..., T]) -> Callable[..., T]:  # type: ignore[type-var]
-                return func
-
-            return decorator
-
-    smithery = _SmitheryFallback()  # type: ignore[assignment]
-
 
 # --- Helpers ---------------------------------------------------------------
 
@@ -137,7 +118,7 @@ if _raw_default_agent_id is not None:
 # into Pydantic models serialized with exclude_none=True. An empty string would
 # survive exclude_none and leak "agent_id": "" into the payload, violating the
 # spec's "no agent_id injected when default unset" guarantee. None is excluded.
-ENV_DEFAULT_AGENT_ID: Optional[str] = _raw_default_agent_id or None
+ENV_DEFAULT_AGENT_ID: str | None = _raw_default_agent_id or None
 # Note: the OSS server has no graph-memory endpoints, so MEM0_ENABLE_GRAPH_DEFAULT
 # (supported by the cloud edition of this server) is intentionally not honoured here.
 
@@ -167,7 +148,7 @@ def _config_value(source: Any, field: str) -> Any:
     return getattr(source, field, None) if hasattr(source, field) else None
 
 
-def _resolve_settings(ctx: Context | None) -> tuple[str, str, Optional[str], str]:
+def _resolve_settings(ctx: Context | None) -> tuple[str, str, str | None, str]:
     """Return (api_key, default_user, default_agent, base_url) from session config or env.
 
     For all four fields, env wins over session config with a warning on conflict
@@ -190,7 +171,7 @@ def _resolve_settings(ctx: Context | None) -> tuple[str, str, Optional[str], str
     api_key = session_api_key or ENV_API_KEY
     if not api_key:
         raise RuntimeError(
-            "MEM0_API_KEY is required (via Smithery config, session config, or environment) "
+            "MEM0_API_KEY is required (via session config or environment) "
             "to run the Mem0 MCP server."
         )
     session_default_user = _config_value(session_config, "default_user_id")
@@ -231,24 +212,21 @@ class Mem0OSSClient:
             {"X-API-Key": api_key, "Content-Type": "application/json"}
         )
 
-    def _url(self, path: str) -> str:
-        return f"{self._base}{path}"
-
     def _call(
         self,
         method: str,
         path: str,
         *,
-        params: Optional[dict] = None,
-        json_body: Optional[dict] = None,
-        timeout: Optional[int] = None,
+        params: dict | None = None,
+        json_body: dict | None = None,
+        timeout: int | None = None,
     ) -> Any:
         if timeout is None:
             timeout = _WRITE_TIMEOUT if method in ("POST", "PUT", "PATCH") else _READ_TIMEOUT
         try:
             resp = self._session.request(
                 method,
-                self._url(path),
+                f"{self._base}{path}",
                 params=params,
                 json=json_body,
                 timeout=timeout,
@@ -333,7 +311,7 @@ def clear_client_cache() -> None:
 
 
 def _with_default_filters(
-    filters: Optional[dict], default_user: str, default_agent: Optional[str]
+    filters: dict | None, default_user: str, default_agent: str | None
 ) -> dict:
     """Inject default user_id and agent_id into search filters when absent."""
     result = dict(filters) if filters else {}
@@ -352,9 +330,8 @@ except PackageNotFoundError:  # pragma: no cover - script runs without metadata
     _PKG_VERSION = "0.0.0"
 
 
-@smithery.server(config_schema=ConfigSchema)
 def create_server() -> FastMCP:
-    """Create a FastMCP server usable via stdio, Docker, or Smithery."""
+    """Create a FastMCP server usable via stdio or Docker."""
 
     if not ENV_API_KEY:
         logger.warning(
@@ -377,14 +354,14 @@ def create_server() -> FastMCP:
     )
     def add_memory(
         text: Annotated[
-            Optional[str],
+            str | None,
             Field(
                 default=None,
                 description="Plain sentence summarizing what to store. Provide this OR `messages`.",
             ),
         ] = None,
         messages: Annotated[
-            Optional[list[dict[str, str]]],
+            list[dict[str, str]] | None,
             Field(
                 default=None,
                 description="Structured conversation history with `role`/`content`. "
@@ -392,33 +369,33 @@ def create_server() -> FastMCP:
             ),
         ] = None,
         user_id: Annotated[
-            Optional[str],
+            str | None,
             Field(default=None, description="Override the default user scope for this write."),
         ] = None,
         agent_id: Annotated[
-            Optional[str], Field(default=None, description="Optional agent identifier.")
+            str | None, Field(default=None, description="Optional agent identifier.")
         ] = None,
         run_id: Annotated[
-            Optional[str], Field(default=None, description="Optional run identifier.")
+            str | None, Field(default=None, description="Optional run identifier.")
         ] = None,
         metadata: Annotated[
-            Optional[dict[str, Any]],
+            dict[str, Any] | None,
             Field(default=None, description="Attach arbitrary metadata JSON to the memory."),
         ] = None,
         expiration_date: Annotated[
-            Optional[str],
+            str | None,
             Field(default=None, description="Expiration date in YYYY-MM-DD format."),
         ] = None,
         infer: Annotated[
-            Optional[bool],
+            bool | None,
             Field(default=None, description="Whether to extract facts from messages. Defaults to True."),
         ] = None,
         memory_type: Annotated[
-            Optional[str],
+            str | None,
             Field(default=None, description="Type of memory to store (e.g. 'core')."),
         ] = None,
         prompt: Annotated[
-            Optional[str],
+            str | None,
             Field(default=None, description="Custom prompt to use for fact extraction."),
         ] = None,
         ctx: Context | None = None,
@@ -436,7 +413,7 @@ def create_server() -> FastMCP:
         args = AddMemoryArgs(
             text=text,
             messages=validated_messages,
-            user_id=user_id if user_id else (default_user if not (agent_id or run_id) else None),
+            user_id=user_id or (default_user if not (agent_id or run_id) else None),
             agent_id=agent_id or default_agent,
             run_id=run_id,
             metadata=metadata,
@@ -473,21 +450,21 @@ def create_server() -> FastMCP:
     def search_memories(
         query: Annotated[str, Field(description="Natural language description of what to find.")],
         filters: Annotated[
-            Optional[dict[str, Any]],
+            dict[str, Any] | None,
             Field(default=None, description="Additional filter clauses (user_id injected automatically)."),
         ] = None,
         top_k: Annotated[
-            Optional[int], Field(default=None, description="Maximum number of results to return.")
+            int | None, Field(default=None, description="Maximum number of results to return.")
         ] = None,
         threshold: Annotated[
-            Optional[float], Field(default=None, description="Minimum similarity score for results.")
+            float | None, Field(default=None, description="Minimum similarity score for results.")
         ] = None,
         explain: Annotated[
-            Optional[bool],
+            bool | None,
             Field(default=None, description="Include score details for each search result."),
         ] = None,
         show_expired: Annotated[
-            Optional[bool], Field(default=None, description="Include expired memories.")
+            bool | None, Field(default=None, description="Include expired memories.")
         ] = None,
         ctx: Context | None = None,
     ) -> dict | str:
@@ -514,20 +491,20 @@ def create_server() -> FastMCP:
     )
     def get_memories(
         user_id: Annotated[
-            Optional[str],
+            str | None,
             Field(default=None, description="Filter by user ID; defaults to server user."),
         ] = None,
         agent_id: Annotated[
-            Optional[str], Field(default=None, description="Filter by agent ID.")
+            str | None, Field(default=None, description="Filter by agent ID.")
         ] = None,
         run_id: Annotated[
-            Optional[str], Field(default=None, description="Filter by run ID.")
+            str | None, Field(default=None, description="Filter by run ID.")
         ] = None,
         top_k: Annotated[
-            Optional[int], Field(default=None, description="Maximum number of memories (max 1000).")
+            int | None, Field(default=None, description="Maximum number of memories (max 1000).")
         ] = None,
         show_expired: Annotated[
-            Optional[bool], Field(default=None, description="Include expired memories.")
+            bool | None, Field(default=None, description="Include expired memories.")
         ] = None,
         ctx: Context | None = None,
     ) -> dict | str:
@@ -547,14 +524,14 @@ def create_server() -> FastMCP:
     @server.tool(description="Delete every memory in the given user/agent/run scope but keep the entity.")
     def delete_all_memories(
         user_id: Annotated[
-            Optional[str],
+            str | None,
             Field(default=None, description="User scope to delete; defaults to server user."),
         ] = None,
         agent_id: Annotated[
-            Optional[str], Field(default=None, description="Optional agent scope to delete.")
+            str | None, Field(default=None, description="Optional agent scope to delete.")
         ] = None,
         run_id: Annotated[
-            Optional[str], Field(default=None, description="Optional run scope to delete.")
+            str | None, Field(default=None, description="Optional run scope to delete.")
         ] = None,
         ctx: Context | None = None,
     ) -> dict | str:
@@ -605,12 +582,12 @@ def create_server() -> FastMCP:
     @server.tool(description="Overwrite an existing memory's text and/or metadata.")
     def update_memory(
         memory_id: Annotated[str, Field(description="Exact memory_id to overwrite.")],
-        text: Annotated[Optional[str], Field(default=None, description="Replacement text for the memory.")] = None,
+        text: Annotated[str | None, Field(default=None, description="Replacement text for the memory.")] = None,
         metadata: Annotated[
-            Optional[dict[str, Any]], Field(default=None, description="Metadata to update.")
+            dict[str, Any] | None, Field(default=None, description="Metadata to update.")
         ] = None,
         expiration_date: Annotated[
-            Optional[str], Field(default=None, description="Expiration date in YYYY-MM-DD format.")
+            str | None, Field(default=None, description="Expiration date in YYYY-MM-DD format.")
         ] = None,
         ctx: Context | None = None,
     ) -> dict | str:
@@ -647,13 +624,13 @@ def create_server() -> FastMCP:
     )
     def delete_entities(
         user_id: Annotated[
-            Optional[str], Field(default=None, description="Delete this user and its memories.")
+            str | None, Field(default=None, description="Delete this user and its memories.")
         ] = None,
         agent_id: Annotated[
-            Optional[str], Field(default=None, description="Delete this agent and its memories.")
+            str | None, Field(default=None, description="Delete this agent and its memories.")
         ] = None,
         run_id: Annotated[
-            Optional[str], Field(default=None, description="Delete this run and its memories.")
+            str | None, Field(default=None, description="Delete this run and its memories.")
         ] = None,
         ctx: Context | None = None,
     ) -> dict | str:
@@ -661,19 +638,13 @@ def create_server() -> FastMCP:
 
         api_key, _, _, base_url = _resolve_settings(ctx)
         args = DeleteEntitiesArgs(user_id=user_id, agent_id=agent_id, run_id=run_id)
-        scope = next(
-            (
-                (etype, value)
-                for etype, value in (
-                    ("user", args.user_id),
-                    ("agent", args.agent_id),
-                    ("run", args.run_id),
-                )
-                if value
-            ),
-            None,
-        )
-        if scope is None:
+        if args.user_id:
+            scope: tuple[str, str] = ("user", args.user_id)
+        elif args.agent_id:
+            scope = ("agent", args.agent_id)
+        elif args.run_id:
+            scope = ("run", args.run_id)
+        else:
             return _error(
                 "scope_missing",
                 "Provide user_id, agent_id, or run_id before calling delete_entities.",

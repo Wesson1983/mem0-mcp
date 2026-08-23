@@ -479,10 +479,12 @@ def test_add_memory_args_rejects_messages_with_non_string_content() -> None:
     raises ``ValidationError`` pointing at ``('messages', 0, 'content')``.
 
     ``ToolMessage.content`` is typed ``str`` (``schemas.py:24``); Pydantic
-    does not coerce ``int`` -> ``str`` in strict mode, so an int content
-    fails validation. This pins that the field is string-typed, not
-    ``Any`` — a regression that widened it to ``Any`` would accept the int
-    and break this test.
+    v2 rejects ``int`` for ``str``-typed fields in lax mode (the default,
+    since ``ToolMessage`` uses plain ``BaseModel`` with no
+    ``model_config = ConfigDict(strict=True)``), so an int content fails
+    validation. This pins that the field is string-typed, not ``Any`` — a
+    regression that widened it to ``Any`` would accept the int and break
+    this test.
     """
     with pytest.raises(ValidationError) as exc_info:
         AddMemoryArgs(messages=[{"role": "user", "content": 123}])  # type: ignore[call-arg, list-item]

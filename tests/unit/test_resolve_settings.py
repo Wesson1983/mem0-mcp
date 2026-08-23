@@ -60,6 +60,32 @@ class _StubContext:
         self.session_config = session_config
 
 
+class _StubSessionConfigAttrs:
+    """Attribute-bearing stand-in for a session-config object.
+
+    ``_config_value`` (``server.py:162-167``) branches on
+    ``isinstance(source, dict)``: for a non-dict source it reads
+    ``getattr(source, field, None)`` (guarded by ``hasattr``). This stub holds
+    the four session-config fields as plain attributes so the ``getattr``
+    branch is exercised — the complement to the ``dict`` shape (which hits the
+    ``source.get(field)`` branch) used elsewhere in this file. Task 4.3
+    explicitly requires both shapes because the helper branches on the source
+    type, and a regression in either branch would otherwise go undetected.
+    """
+
+    def __init__(
+        self,
+        mem0_api_key: str | None,
+        base_url: str | None,
+        default_user_id: str | None,
+        default_agent_id: str | None,
+    ) -> None:
+        self.mem0_api_key = mem0_api_key
+        self.base_url = base_url
+        self.default_user_id = default_user_id
+        self.default_agent_id = default_agent_id
+
+
 # ---------------------------------------------------------------------------
 # Env-only resolution: all three env fields resolve to the patched constants
 # ---------------------------------------------------------------------------
@@ -414,3 +440,129 @@ def test_resolve_settings_env_wins_over_session_config_per_field(
     # session-config value.
     assert result[index] == env_value
     assert result[index] != session_value
+
+
+# ---------------------------------------------------------------------------
+# Session-config fallback (task 4.3)
+#
+# With ``ENV_API_KEY`` / ``ENV_BASE_URL`` / ``ENV_DEFAULT_AGENT_ID`` patched to
+# ``None``, the session-config values are used for those three fields — the
+# ``if session_* and ENV_*`` conflict guards (``server.py:185,205,213``) do not
+# fire because the env constant is falsy, so ``session_* or ENV_*`` collapses to
+# the session-config value.
+#
+# ``ENV_DEFAULT_USER_ID`` is NOT patched to ``None``: ``server.py:126`` resolves
+# it via ``os.getenv("MEM0_DEFAULT_USER_ID", "mem0-mcp")``, so the constant
+# always carries at least the built-in ``"mem0-mcp"`` default and is never
+# empty. The conflict guard at ``server.py:197`` therefore ALWAYS fires when a
+# session-config ``default_user_id`` is set, dropping the session-config value
+# (with a warning) so ``default_user = session_default_user or
+# ENV_DEFAULT_USER_ID`` resolves to ``ENV_DEFAULT_USER_ID``. A session-config
+# ``default_user_id`` is in practice always overridden — operators must set
+# ``MEM0_DEFAULT_USER_ID`` to change the default user. This test asserts that
+# documented always-overridden behavior (env wins) rather than a fallback.
+#
+# Both session-config shapes ``_config_value`` supports are covered
+# (``server.py:162-167``):
+# 1. A plain ``dict`` — ``_config_value`` returns ``source.get(field)``.
+# 2. An object with attributes (``_StubSessionConfigAttrs``) — ``_config_value``
+#    returns ``getattr(source, field, None)``.
+# Parametrizing the fallback test across both shapes ensures a regression in
+# either ``_config_value`` branch is caught.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "session_config",
+    [
+        # dict shape — ``_config_value`` takes the ``isinstance(source, dict)``
+        # branch and returns ``source.get(field)`` (``server.py:165-166``).
+        {
+            "mem0_api_key": "session-api-key-fallback",
+            "base_url": "http://localhost:6666",
+            "default_user_id": "session-user-fallback",
+            "default_agent_id": "session-agent-fallback",
+        },
+        # attrs-object shape — ``_config_value`` takes the ``getattr`` branch
+        # and returns ``getattr(source, field, None)`` (``server.py:167``).
+        _StubSessionConfigAttrs(
+            mem0_api_key="session-api-key-fallback",
+            base_url="http://localhost:6666",
+            default_user_id="session-user-fallback",
+            default_agent_id="session-agent-fallback",
+        ),
+    ],
+    ids=["dict-shape", "attrs-shape"],
+)
+def test_resolve_settings_session_config_fallback_when_env_none(
+    monkeypatch: pytest.MonkeyPatch,
+    session_config: object,
+) -> None:
+    """With ``ENV_API_KEY`` / ``ENV_BASE_URL`` / ``ENV_DEFAULT_AGENT_ID``
+    patched to ``None``, the session-config values are used for those three
+    fields; the session-config ``default_user_id`` is always overridden by
+    ``ENV_DEFAULT_USER_ID`` (env wins).
+
+    The three ``None``-patched env constants make the conflict guards at
+    ``server.py:185,205,213`` skip (the ``and ENV_*`` operand is falsy), so the
+    session-config values flow through ``session_* or ENV_*`` unchanged:
+    ``api_key``, ``base_url``, and ``default_agent`` resolve to their
+    session-config values. No ``RuntimeError`` is raised because
+    ``api_key = session_api_key or ENV_API_KEY`` is truthy
+    (``session_api_key`` is set).
+
+    ``ENV_DEFAULT_USER_ID`` is deliberately NOT patched to ``None``: it carries
+    the built-in ``"mem0-mcp"`` default (``server.py:126``), so the conflict
+    guard at ``server.py:197`` always fires when a session-config
+    ``default_user_id`` is present — the session-config value is dropped and
+    ``default_user`` resolves to ``ENV_DEFAULT_USER_ID``. This is the documented
+    "always overridden" behavior (AGENTS.md, ``server.py:178-181``): operators
+    must set ``MEM0_DEFAULT_USER_ID`` to change the default user; a
+    session-config ``default_user_id`` cannot override it. The test asserts env
+    wins (the resolved ``default_user`` equals the unpatched import-time
+    constant, NOT the session-config value) rather than a fallback.
+
+    The session-config ``base_url`` uses ``http://localhost:6666`` —
+    ``localhost`` is in ``_LOCAL_HOSTS`` (``server.py:75``), so
+    ``_validate_base_url`` (``server.py:78-86``) accepts plain HTTP and the
+    fallback URL survives validation unchanged.
+
+    Parametrized across both ``_config_value`` shapes (dict vs attrs-object) so
+    a regression in either branch of ``server.py:162-167`` is caught: the dict
+    case exercises ``source.get(field)`` and the attrs case exercises
+    ``getattr(source, field, None)``.
+    """
+    # Snapshot the real import-time constant BEFORE patching anything, so the
+    # ``default_user`` assertion is independent of whether the host env has
+    # ``MEM0_DEFAULT_USER_ID`` set (it would be ``"mem0-mcp"`` when unset, or
+    # the operator's value when set). The behavior under test is "env wins over
+    # session-config default_user_id", not a specific literal.
+    builtin_default_user_id = server.ENV_DEFAULT_USER_ID
+
+    # Patch the three env constants that SHOULD fall back to session config.
+    # ``ENV_DEFAULT_USER_ID`` is intentionally left unpatched — it carries the
+    # built-in default and must win over the session-config value.
+    monkeypatch.setattr(server, "ENV_API_KEY", None)
+    monkeypatch.setattr(server, "ENV_BASE_URL", None)
+    monkeypatch.setattr(server, "ENV_DEFAULT_AGENT_ID", None)
+
+    ctx = _StubContext(session_config=session_config)
+
+    # ``ctx`` is a duck-typed stub (not a real ``Context``); the call is
+    # intentional, so silence mypy's structural-mismatch error.
+    api_key, default_user, default_agent, base_url = _resolve_settings(ctx)  # type: ignore[arg-type]
+
+    # The three None-patched fields fall back to their session-config values.
+    # These assertions hold for BOTH the dict and attrs-object shapes —
+    # ``_config_value`` returns the same value via either branch.
+    assert api_key == "session-api-key-fallback"
+    assert base_url == "http://localhost:6666"
+    assert default_agent == "session-agent-fallback"
+
+    # ``ENV_DEFAULT_USER_ID`` always wins over the session-config
+    # ``default_user_id`` (the conflict guard at ``server.py:197`` fires
+    # because the env constant is never empty). Assert the documented
+    # always-overridden behavior: the resolved ``default_user`` is the env
+    # value, NOT the session-config ``"session-user-fallback"``.
+    assert default_user == builtin_default_user_id
+    assert default_user != "session-user-fallback"

@@ -15,7 +15,7 @@ import os
 import re
 import urllib.parse
 from importlib.metadata import PackageNotFoundError, version
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import requests
 from dotenv import load_dotenv
@@ -34,7 +34,7 @@ try:  # Support both package and script runs.
         UpdateMemoryArgs,
     )
 except ImportError:  # pragma: no cover - fallback for script execution
-    from schemas import (  # type: ignore[no-redef]
+    from schemas import (  # type: ignore[no-redef,import-untyped]
         AddMemoryArgs,
         DeleteAllArgs,
         DeleteEntitiesArgs,
@@ -92,7 +92,7 @@ def _validate_memory_id(memory_id: str) -> str:
     return memory_id
 
 
-def _error(code: str, detail: str, status: int | None = None) -> dict:
+def _error(code: str, detail: str, status: int | None = None) -> dict[str, Any]:
     """Build a standardized error dict returned by tools and `_call`."""
     err: dict[str, Any] = {"error": code, "detail": detail}
     if status is not None:
@@ -148,7 +148,7 @@ def _config_value(source: Any, field: str) -> Any:
     return getattr(source, field, None) if hasattr(source, field) else None
 
 
-def _resolve_settings(ctx: Context | None) -> tuple[str, str, str | None, str]:
+def _resolve_settings(ctx: Context[Any, Any] | None) -> tuple[str, str, str | None, str]:
     """Return (api_key, default_user, default_agent, base_url) from session config or env.
 
     For all four fields, env wins over session config with a warning on conflict
@@ -217,10 +217,10 @@ class Mem0OSSClient:
         method: str,
         path: str,
         *,
-        params: dict | None = None,
-        json_body: dict | None = None,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
         timeout: int | None = None,
-    ) -> Any:
+    ) -> dict[str, Any]:
         if timeout is None:
             timeout = _WRITE_TIMEOUT if method in ("POST", "PUT", "PATCH") else _READ_TIMEOUT
         try:
@@ -246,44 +246,44 @@ class Mem0OSSClient:
             )
             return _error(f"http_{resp.status_code}", _redact(resp.text, 1000), status=resp.status_code)
         try:
-            return resp.json()
+            return cast(dict[str, Any], resp.json())
         except ValueError:
             return {"message": _redact(resp.text, 1000)}
 
     # Memory CRUD
-    def add(self, body: dict) -> Any:
+    def add(self, body: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/memories", json_body=body)
 
-    def search(self, body: dict) -> Any:
+    def search(self, body: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/search", json_body=body)
 
-    def list_memories(self, params: dict) -> Any:
+    def list_memories(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._call("GET", "/memories", params=params)
 
-    def get(self, memory_id: str) -> Any:
+    def get(self, memory_id: str) -> dict[str, Any]:
         _validate_memory_id(memory_id)
         return self._call("GET", f"/memories/{memory_id}")
 
-    def update(self, memory_id: str, body: dict) -> Any:
+    def update(self, memory_id: str, body: dict[str, Any]) -> dict[str, Any]:
         _validate_memory_id(memory_id)
         return self._call("PUT", f"/memories/{memory_id}", json_body=body)
 
-    def delete(self, memory_id: str) -> Any:
+    def delete(self, memory_id: str) -> dict[str, Any]:
         _validate_memory_id(memory_id)
         return self._call("DELETE", f"/memories/{memory_id}")
 
-    def delete_all(self, params: dict) -> Any:
+    def delete_all(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._call("DELETE", "/memories", params=params, timeout=_WRITE_TIMEOUT)
 
-    def history(self, memory_id: str) -> Any:
+    def history(self, memory_id: str) -> dict[str, Any]:
         _validate_memory_id(memory_id)
         return self._call("GET", f"/memories/{memory_id}/history")
 
     # Entities
-    def list_entities(self) -> Any:
+    def list_entities(self) -> dict[str, Any]:
         return self._call("GET", "/entities")
 
-    def delete_entity(self, entity_type: str, entity_id: str) -> Any:
+    def delete_entity(self, entity_type: str, entity_id: str) -> dict[str, Any]:
         _validate_memory_id(entity_type)
         _validate_memory_id(entity_id)
         return self._call("DELETE", f"/entities/{entity_type}/{entity_id}")
@@ -311,8 +311,8 @@ def clear_client_cache() -> None:
 
 
 def _with_default_filters(
-    filters: dict | None, default_user: str, default_agent: str | None
-) -> dict:
+    filters: dict[str, Any] | None, default_user: str, default_agent: str | None
+) -> dict[str, Any]:
     """Inject default user_id and agent_id into search filters when absent."""
     result = dict(filters) if filters else {}
     if "user_id" not in result:
@@ -398,8 +398,8 @@ def create_server() -> FastMCP:
             str | None,
             Field(default=None, description="Custom prompt to use for fact extraction."),
         ] = None,
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """Write durable information to Mem0."""
 
         api_key, default_user, default_agent, base_url = _resolve_settings(ctx)
@@ -466,8 +466,8 @@ def create_server() -> FastMCP:
         show_expired: Annotated[
             bool | None, Field(default=None, description="Include expired memories.")
         ] = None,
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """Semantic search against existing memories."""
 
         api_key, default_user, default_agent, base_url = _resolve_settings(ctx)
@@ -506,8 +506,8 @@ def create_server() -> FastMCP:
         show_expired: Annotated[
             bool | None, Field(default=None, description="Include expired memories.")
         ] = None,
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """List memories via flat filters."""
 
         api_key, default_user, default_agent, base_url = _resolve_settings(ctx)
@@ -533,8 +533,8 @@ def create_server() -> FastMCP:
         run_id: Annotated[
             str | None, Field(default=None, description="Optional run scope to delete.")
         ] = None,
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """Bulk-delete every memory in the confirmed scope."""
 
         api_key, default_user, default_agent, base_url = _resolve_settings(ctx)
@@ -547,7 +547,7 @@ def create_server() -> FastMCP:
         return _client(base_url, api_key).delete_all(params)
 
     @server.tool(description="List which users/agents/runs currently hold memories.")
-    def list_entities(ctx: Context | None = None) -> dict | str:
+    def list_entities(ctx: Context[Any, Any] | None = None) -> dict[str, Any] | str:
         """List users/agents/runs with stored memories."""
 
         api_key, _, _, base_url = _resolve_settings(ctx)
@@ -556,8 +556,8 @@ def create_server() -> FastMCP:
     @server.tool(description="Fetch a single memory once you know its memory_id.")
     def get_memory(
         memory_id: Annotated[str, Field(description="Exact memory_id to fetch.")],
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """Retrieve a single memory once the user has picked an exact ID."""
 
         api_key, _, _, base_url = _resolve_settings(ctx)
@@ -569,8 +569,8 @@ def create_server() -> FastMCP:
     @server.tool(description="Retrieve the edit history of a single memory.")
     def get_memory_history(
         memory_id: Annotated[str, Field(description="Exact memory_id to fetch history for.")],
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """Retrieve the edit history of a single memory."""
 
         api_key, _, _, base_url = _resolve_settings(ctx)
@@ -589,8 +589,8 @@ def create_server() -> FastMCP:
         expiration_date: Annotated[
             str | None, Field(default=None, description="Expiration date in YYYY-MM-DD format.")
         ] = None,
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """Overwrite an existing memory after the user confirms the exact memory_id."""
 
         api_key, _, _, base_url = _resolve_settings(ctx)
@@ -609,8 +609,8 @@ def create_server() -> FastMCP:
     @server.tool(description="Delete one memory after the user confirms its memory_id.")
     def delete_memory(
         memory_id: Annotated[str, Field(description="Exact memory_id to delete.")],
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """Delete a memory once the user explicitly confirms the memory_id to remove."""
 
         api_key, _, _, base_url = _resolve_settings(ctx)
@@ -632,8 +632,8 @@ def create_server() -> FastMCP:
         run_id: Annotated[
             str | None, Field(default=None, description="Delete this run and its memories.")
         ] = None,
-        ctx: Context | None = None,
-    ) -> dict | str:
+        ctx: Context[Any, Any] | None = None,
+    ) -> dict[str, Any] | str:
         """Delete a user/agent/run (and its memories) once the user confirms the scope."""
 
         api_key, _, _, base_url = _resolve_settings(ctx)

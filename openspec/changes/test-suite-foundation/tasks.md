@@ -80,8 +80,8 @@
 
 ## 13. CI workflow
 
-- [ ] 13.1 Create `.github/workflows/ci.yml` with a `lint-and-test` job that runs on `push` and `pull_request`. Steps: checkout, setup Python 3.12, install dev dependencies (`pip install -e ".[dev]"`), `ruff check`, `mypy src/`, `pytest -m "not e2e"`. Verify the workflow file is valid YAML and the job steps are syntactically correct.
-- [ ] 13.2 Verify the full local run: `ruff check && mypy src/ && pytest -m "not e2e"` passes with all unit and integration tests green against the current sync code. This is the baseline that `async-tool-execution` must not break.
+- [x] 13.1 Create `.github/workflows/ci.yml` with a `lint-and-test` job that runs on `push` and `pull_request`. Steps: checkout, setup Python 3.12, install dev dependencies (`pip install -e ".[dev]"`), `ruff check`, `mypy src/`, `pytest -m "not e2e"`. Verify the workflow file is valid YAML and the job steps are syntactically correct.
+- [x] 13.2 Verify the full local run: `ruff check && mypy src/ && pytest -m "not e2e"` passes with all unit and integration tests green against the current sync code. This is the baseline that `async-tool-execution` must not break.
 
 ## 14. Final verification
 

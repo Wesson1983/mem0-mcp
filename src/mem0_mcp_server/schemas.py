@@ -13,7 +13,7 @@ def _validate_iso_date(value: str | None) -> str | None:
     if value is None:
         return None
     try:
-        datetime.strptime(value, "%Y-%m-%d")
+        datetime.strptime(value, "%Y-%m-%d")  # noqa: DTZ007 - format check only, value discarded
     except ValueError as exc:
         raise ValueError("expiration_date must be in YYYY-MM-DD format") from exc
     return value

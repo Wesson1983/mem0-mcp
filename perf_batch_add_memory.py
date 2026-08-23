@@ -94,7 +94,7 @@ def bench_direct(n: int, batch: int, delay: float = 5.0) -> list[float]:
         if ok:
             try:
                 n_results = len(r.json().get("results", []))
-            except Exception:
+            except (ValueError, AttributeError, TypeError):
                 pass
         print(f"  call {i}: {dt:7.3f}s  [{flag}]  results={n_results}  run_id={run_id}", flush=True)
         if ok:
@@ -175,7 +175,7 @@ def bench_mcp(n: int, batch: int, delay: float = 5.0) -> list[float]:
         t0 = time.perf_counter()
         try:
             resp = _mcp_rpc(s, sid, 100 + i, "tools/call", {"name": "add_memory", "arguments": args})
-        except Exception as exc:
+        except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
             print(f"  call {i}: CALL FAILED: {exc}", file=sys.stderr)
             continue
         dt = time.perf_counter() - t0
@@ -239,7 +239,7 @@ def main() -> int:
         print(_fmt(st))
 
     # Throughput: records/sec
-    print(f"\n=== Throughput (records = messages stored) ===")
+    print("\n=== Throughput (records = messages stored) ===")
     for st in results:
         total_records = st["n"] * args.batch_size
         total_time = st["mean_s"] * st["n"]

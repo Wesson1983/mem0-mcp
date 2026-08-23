@@ -2,8 +2,8 @@
 
 These hit the real Docker container at ``MCP_URL`` over the MCP Streamable
 HTTP transport via the ``mcp_session`` fixture (handshake + ``call`` helper).
-The whole package is skipped unless ``MEM0_E2E=1`` (autouse ``skip_if_no_e2e``
-in ``tests/e2e/conftest.py``).
+The whole package is skipped unless ``MEM0_E2E=1`` (collection-time skip in
+``tests/e2e/conftest.py::pytest_collection_modifyitems``).
 
 - **10.2** ``test_initialize_and_tools_list`` — after the handshake, call
   ``tools/list`` and assert exactly 10 tools are returned (the server
@@ -21,11 +21,10 @@ in ``tests/e2e/conftest.py``).
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from tests.e2e.conftest import McpSession
+from tests.e2e.conftest import tool_text as _tool_text
 
 # The server registers exactly 10 tool functions (see ``create_server`` in
 # ``src/mem0_mcp_server/server.py`` and ``_EXPECTED_TOOL_NAMES`` in
@@ -33,26 +32,6 @@ from tests.e2e.conftest import McpSession
 # transport-level test does not import the integration module's private
 # sentinel.
 _EXPECTED_TOOL_COUNT = 10
-
-
-def _tool_text(body: dict[str, Any] | None) -> str:
-    """Extract the first content item's text from a ``tools/call`` result.
-
-    The MCP ``tools/call`` result wraps the tool's return value as
-    ``{"content": [{"type": "text", "text": "<json>"}], "isError": bool}``.
-    Returns ``""`` when the shape is unexpected so callers can do substring
-    checks without ``KeyError``/``IndexError`` masking the real assertion.
-    """
-    if not body:
-        return ""
-    result = body.get("result") or {}
-    content = result.get("content") or []
-    if not content or not isinstance(content, list):
-        return ""
-    first = content[0]
-    if not isinstance(first, dict):
-        return ""
-    return str(first.get("text", ""))
 
 
 # ---------------------------------------------------------------------------

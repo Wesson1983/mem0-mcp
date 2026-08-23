@@ -146,44 +146,20 @@ def _mcp_url() -> str:
     return os.getenv("MCP_URL", "http://localhost:8765/mcp")
 
 
-@pytest.fixture(autouse=True)
-def skip_if_no_e2e() -> None:
-    """Skip every e2e test unless ``MEM0_E2E=1`` is set.
+def _mcp_handshake(url: str, http: requests.Session) -> dict[str, str]:
+    """Perform the MCP initialize / notifications/initialized handshake.
 
-    The e2e layer requires a running container, mem0 OSS, and LM Studio
-    (AGENTS.md "Verification"). CI never sets ``MEM0_E2E``, so the whole
-    package is skipped there; the skip message names the precondition so a
-    developer who runs the suite without the stack sees exactly what's
-    missing instead of a connection error.
+    Returns the session headers (base headers + ``MCP-Session-Id``) that
+    subsequent requests must carry. Raises ``RuntimeError`` if the server
+    does not return a session id. Factored out of the ``mcp_session`` fixture
+    so module-scoped and function-scoped fixtures can share the same logic
+    without duplicating the handshake steps.
     """
-    if os.getenv("MEM0_E2E") != "1":
-        pytest.skip("requires MEM0_E2E=1 plus a running container, mem0 OSS, and LM Studio")
-
-
-@pytest.fixture
-def mcp_session() -> Iterator[McpSession]:
-    """Perform the MCP handshake and yield an :class:`McpSession` helper.
-
-    Steps (per AGENTS.md "Verification"):
-      1. ``POST /mcp initialize`` → capture the ``mcp-session-id`` response
-         header. ``Accept`` carries both content types so the server uses
-         SSE framing.
-      2. ``POST /mcp notifications/initialized`` with the session header
-         (no response body expected).
-
-    Yields a session-scoped ``McpSession`` whose ``call``/``tools_list``
-    methods post subsequent requests with the captured session header. The
-    HTTP session is closed on teardown.
-    """
-    url = _mcp_url()
     base_headers = {
         "Accept": _MCP_ACCEPT,
         "Content-Type": "application/json",
         "MCP-Protocol-Version": _MCP_PROTOCOL_VERSION,
     }
-    http = requests.Session()
-
-    # 1. initialize
     init_payload: dict[str, Any] = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -195,6 +171,7 @@ def mcp_session() -> Iterator[McpSession]:
         },
     }
     init_resp = http.post(url, headers=base_headers, json=init_payload, timeout=60)
+    _raise_on_http_error(init_resp)
     session_headers = dict(base_headers)
     session_headers["MCP-Session-Id"] = init_resp.headers.get("mcp-session-id") or ""
     if not session_headers["MCP-Session-Id"]:
@@ -202,11 +179,73 @@ def mcp_session() -> Iterator[McpSession]:
             f"MCP initialize returned no mcp-session-id header "
             f"(HTTP {init_resp.status_code}); body: {init_resp.text[:300]}"
         )
-
-    # 2. notifications/initialized (no response expected)
     notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-    http.post(url, headers=session_headers, json=notif, timeout=60)
+    notif_resp = http.post(url, headers=session_headers, json=notif, timeout=60)
+    _raise_on_http_error(notif_resp)
+    return session_headers
 
+
+def tool_text(body: dict[str, Any] | None) -> str:
+    """Extract the first content item's text from a ``tools/call`` result.
+
+    The MCP ``tools/call`` result wraps the tool's return value as
+    ``{"content": [{"type": "text", "text": "<json>"}], "isError": bool}``.
+    Returns ``""`` when the shape is unexpected so callers can do substring
+    checks without ``KeyError``/``IndexError`` masking the real assertion.
+    Shared by ``test_mcp_transport.py`` and ``test_tools_call_round_trip.py``.
+    """
+    if not body:
+        return ""
+    result = body.get("result") or {}
+    content = result.get("content") or []
+    if not content or not isinstance(content, list):
+        return ""
+    first = content[0]
+    if not isinstance(first, dict):
+        return ""
+    return str(first.get("text", ""))
+
+
+def tool_result_json(body: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Extract and JSON-parse the tool payload from a ``tools/call`` response.
+
+    Combines :func:`tool_text` with ``json.loads``; returns ``None`` when the
+    text is absent or not valid JSON so callers can distinguish a missing
+    response from a real error payload.
+    """
+    text = tool_text(body)
+    if not text:
+        return None
+    try:
+        parsed: dict[str, Any] = json.loads(text)
+        return parsed
+    except json.JSONDecodeError:
+        return None
+
+
+@pytest.fixture(scope="module")
+def mcp_session() -> Iterator[McpSession]:
+    """Perform the MCP handshake and yield an :class:`McpSession` helper.
+
+    Module-scoped so all tests in a module share one session (one handshake
+    instead of N). Tests in ``test_mcp_transport.py`` and
+    ``test_tools_call_round_trip.py`` each get their own session because the
+    fixture is module-scoped, not session-scoped.
+
+    Steps (per AGENTS.md "Verification"):
+      1. ``POST /mcp initialize`` → capture the ``mcp-session-id`` response
+         header. ``Accept`` carries both content types so the server uses
+         SSE framing.
+      2. ``POST /mcp notifications/initialized`` with the session header
+         (no response body expected).
+
+    Yields a ``McpSession`` whose ``call``/``tools_list`` methods post
+    subsequent requests with the captured session header. The HTTP session
+    is closed on teardown.
+    """
+    url = _mcp_url()
+    http = requests.Session()
+    session_headers = _mcp_handshake(url, http)
     session = McpSession(url, session_headers, http)
     try:
         yield session
@@ -214,13 +253,17 @@ def mcp_session() -> Iterator[McpSession]:
         http.close()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def test_scope(mcp_session: McpSession) -> Iterator[dict[str, str]]:
     """Mint a unique test scope and clean it up in ``finally``.
 
-    Yields a mutable dict with ``user_id`` and ``agent_id`` set to
-    ``test_e2e_<uuid>`` values, plus any keys tests choose to add (e.g. a
-    ``memory_id`` handed from ``test_add_memory`` to ``test_get_memory``).
+    Module-scoped so all tests in a module share one ``user_id``/``agent_id``
+    pair. This lets ``test_add_memory`` store a ``memory_id`` that
+    ``test_get_memory``/``test_get_memory_history``/``test_update_memory``/
+    ``test_delete_memory`` read later via the shared mutable dict, expressing
+    inter-test dependencies through the dict (plus skip-if-absent) rather
+    than implicit file order (tasks 11.4/11.5/11.6/11.7).
+
     In ``finally`` it calls ``delete_entities`` for the ``user_id`` scope so
     orphaned test memories are removed; any cleanup exception is caught and
     logged so it never masks a test failure (per task 10.1).
@@ -270,6 +313,15 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     the entire suite.
     """
     e2e_marker = pytest.mark.e2e
+    # When ``MEM0_E2E`` is not set, skip at collection time (before any
+    # fixture setup) so module-scoped fixtures like ``mcp_session`` are not
+    # instantiated — a function-scoped autouse skip would fire too late
+    # (after module-scoped fixture setup) and the handshake would error
+    # instead of skipping cleanly.
+    skip_marker = pytest.mark.skip(
+        reason="requires MEM0_E2E=1 plus a running container, mem0 OSS, and LM Studio"
+    )
+    e2e_enabled = os.getenv("MEM0_E2E") == "1"
     # Resolve this conftest's directory once; ``Path.is_relative_to`` handles
     # symlinks, case-insensitive filesystems, and relative-vs-absolute
     # resolution uniformly, replacing the earlier ``str(item.path)``
@@ -282,3 +334,5 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         # canonical regardless of how pytest reported the path.
         if Path(str(item.path)).resolve().is_relative_to(e2e_dir):
             item.add_marker(e2e_marker)
+            if not e2e_enabled:
+                item.add_marker(skip_marker)

@@ -63,16 +63,16 @@
 
 ## 11. E2e tests — tool round-trips
 
-- [ ] 11.1 Create `tests/e2e/test_tools_call_round_trip.py` with `test_add_memory`: call `tools/call add_memory` with `text="test e2e memory"` under the test scope, assert the response is not an error and contains a memory ID. Verify the test passes.
-- [ ] 11.2 Add `test_search_memories`: call `tools/call search_memories` with `query="test"` and the test scope, assert non-error response with results. Verify the test passes.
-- [ ] 11.3 Add `test_get_memories`: call `tools/call get_memories` with the test scope, assert non-error response. Verify the test passes.
-- [ ] 11.4 Add `test_get_memory`: read the memory ID that `test_add_memory` stored in the `test_scope` fixture's mutable dict, call `tools/call get_memory` with it, assert non-error response. Do not rely on file-order test execution — if the ID is absent (because `test_add_memory` failed or was deselected), `pytest.skip` with a clear reason rather than failing on a `KeyError`. Verify the test passes.
-- [ ] 11.5 Add `test_get_memory_history`: call `tools/call get_memory_history` with the memory ID, assert non-error response. Verify the test passes.
-- [ ] 11.6 Add `test_update_memory`: call `tools/call update_memory` with the memory ID and new text, assert non-error response. Verify the test passes.
-- [ ] 11.7 Add `test_delete_memory`: call `tools/call delete_memory` with the memory ID, assert non-error response. Order this after `test_get_memory_history` and `test_update_memory` (which need the memory to still exist) — express the dependency through the shared `test_scope` dict plus skip-if-absent, as in task 11.4, not through implicit file order. Verify the test passes.
-- [ ] 11.8 Add `test_delete_all_memories`: call `tools/call delete_all_memories` with the test scope, assert non-error response. Verify the test passes.
-- [ ] 11.9 Add `test_list_entities`: call `tools/call list_entities`, assert non-error response containing the test scope's user/agent. Verify the test passes.
-- [ ] 11.10 Add `test_delete_entities`: call `tools/call delete_entities` with the test scope's `user_id`, assert non-error response. Verify the test passes.
+- [x] 11.1 Create `tests/e2e/test_tools_call_round_trip.py` with `test_add_memory`: call `tools/call add_memory` with `text="test e2e memory"` under the test scope, assert the response is not an error and contains a memory ID. Verify the test passes.
+- [x] 11.2 Add `test_search_memories`: call `tools/call search_memories` with `query="test"` and the test scope, assert non-error response with results. Verify the test passes.
+- [x] 11.3 Add `test_get_memories`: call `tools/call get_memories` with the test scope, assert non-error response. Verify the test passes.
+- [x] 11.4 Add `test_get_memory`: read the memory ID that `test_add_memory` stored in the `test_scope` fixture's mutable dict, call `tools/call get_memory` with it, assert non-error response. Do not rely on file-order test execution — if the ID is absent (because `test_add_memory` failed or was deselected), `pytest.skip` with a clear reason rather than failing on a `KeyError`. Verify the test passes.
+- [x] 11.5 Add `test_get_memory_history`: call `tools/call get_memory_history` with the memory ID, assert non-error response. Verify the test passes.
+- [x] 11.6 Add `test_update_memory`: call `tools/call update_memory` with the memory ID and new text, assert non-error response. Verify the test passes.
+- [x] 11.7 Add `test_delete_memory`: call `tools/call delete_memory` with the memory ID, assert non-error response. Order this after `test_get_memory_history` and `test_update_memory` (which need the memory to still exist) — express the dependency through the shared `test_scope` dict plus skip-if-absent, as in task 11.4, not through implicit file order. Verify the test passes.
+- [x] 11.8 Add `test_delete_all_memories`: call `tools/call delete_all_memories` with the test scope, assert non-error response. Verify the test passes.
+- [x] 11.9 Add `test_list_entities`: call `tools/call list_entities`, assert non-error response containing the test scope's user/agent. Verify the test passes.
+- [x] 11.10 Add `test_delete_entities`: call `tools/call delete_entities` with the test scope's `user_id`, assert non-error response. Verify the test passes.
 
 ## 12. E2e tests — concurrency (real-latency proof)
 

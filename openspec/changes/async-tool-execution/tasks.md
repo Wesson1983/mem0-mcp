@@ -1,3 +1,17 @@
+## 0. Prerequisite and test-marker cleanup
+
+- [ ] 0.1 Confirm `test-suite-foundation` is applied and `pytest -m "not e2e"`
+  is green (211 passed, 13 deselected, 1 xfailed) before starting any code
+  change in this file.
+- [ ] 0.2 Remove the `xfail(strict=True)` marker from
+  `tests/integration/test_concurrency.py::test_event_loop_yields_during_write_read_in_parallel`
+  (added by `test-suite-foundation` task 9.1). Once the tool functions are
+  async and `requests` calls are offloaded via `anyio.to_thread.run_sync`, the
+  read completes concurrently with the write and `read_elapsed < 1.0` holds.
+  With `strict=True`, leaving the marker in place turns the now-passing test
+  into an `XPASS` failure, so removal is mandatory. After removal, verify the
+  test passes (not xfails) under this change.
+
 ## 1. Convert Mem0OSSClient to async
 
 - [ ] 1.1 Add `import functools` and `import anyio` to `server.py` imports (neither is currently imported; `anyio` is a transitive dependency via `mcp[cli]`, `functools` is stdlib). Verify both imports succeed and are placed per the existing import grouping (stdlib block, then third-party block).

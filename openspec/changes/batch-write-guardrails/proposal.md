@@ -1,3 +1,12 @@
+## Prerequisite
+
+The `test-suite-foundation` change must be applied and its full suite green
+(`pytest -m "not e2e"` — 211 passed, 13 deselected, 1 xfailed) before this
+change is started. It provides the fake-HTTP-server fixtures, the concurrency
+characterization test, and the CI workflow that this change's guardrail logic
+and retry/cooldown tests build on. OpenSpec has no mechanical cross-change
+prerequisite field, so this is documentation only.
+
 ## Why
 
 Performance testing revealed that `add_memory` with `infer=True` (the default)

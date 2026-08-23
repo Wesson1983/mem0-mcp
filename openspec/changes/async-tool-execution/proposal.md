@@ -1,3 +1,13 @@
+## Prerequisite
+
+The `test-suite-foundation` change must be applied and its full suite green
+(`pytest -m "not e2e"` — 211 passed, 13 deselected, 1 xfailed) before this
+change is started. Its concurrency characterization test
+(`tests/integration/test_concurrency.py::test_event_loop_yields_during_write_read_in_parallel`)
+is marked `xfail(strict=True)` against sync code; this change must remove that
+marker (see `tasks.md`). OpenSpec has no mechanical cross-change prerequisite
+field, so this is documentation only.
+
 ## Why
 
 All MCP tool functions in `server.py` are sync (`def add_memory`, `def

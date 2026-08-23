@@ -253,3 +253,164 @@ def test_resolve_settings_env_only_uses_builtin_default_user_id(
     # constant — i.e. the built-in default (``"mem0-mcp"`` on a clean host)
     # flows through verbatim.
     assert default_user == builtin_default_user_id
+
+
+# ---------------------------------------------------------------------------
+# Env-over-session-config precedence (task 4.2)
+#
+# When both an env constant and a session-config value are set for the same
+# field, the env value wins and the session-config value is dropped (with a
+# warning). The resolved tuple must therefore hold the env values, NOT the
+# session-config values. Per the design non-goals (design.md:187-190), warning
+# log text is NOT asserted here — only the resolved values.
+#
+# Two test shapes are used:
+# 1. ``test_resolve_settings_env_wins_over_session_config_all_fields`` — a
+#    single call with all four fields conflicting at once. This is the
+#    realistic shape (an operator sets all env vars and a Smithery session
+#    config also supplies all four) and proves the precedence holds for every
+#    field in one ``_resolve_settings`` invocation.
+# 2. ``test_resolve_settings_env_wins_over_session_config_per_field`` —
+#    parametrized across the four fields so a regression that broke precedence
+#    for exactly one field (e.g. a typo in one ``if session_* and ENV_*``
+#    guard) is isolated to a single failing case rather than one combined
+#    failure.
+#
+# Session-config shape: only the ``dict`` shape is exercised here.
+# ``_config_value`` (``server.py:162-167``) also branches on
+# ``isinstance(source, dict)`` vs ``getattr`` for an object-with-attributes
+# shape, but Task 4.3 explicitly covers the session-config fallback with both
+# shapes, so the object-attribute shape is left to 4.3 to avoid duplicating
+# that coverage here.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_settings_env_wins_over_session_config_all_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When env and session config are both set for all four fields, every
+    resolved value is the env value — the session-config values are dropped.
+
+    ``_resolve_settings`` applies the same precedence pattern to each field
+    (``server.py:185-218``): when both the session-config value and the env
+    constant are truthy, the session-config value is set to ``None`` (with a
+    warning) and ``session_* or ENV_*`` collapses to ``ENV_*``. This test sets
+    all four env constants AND all four session-config keys to *distinct*
+    values so that "env wins" is unambiguous — if the session-config value
+    leaked through, the assertion would fail against a different literal.
+
+    A single combined call is used (rather than one test per field) because it
+    mirrors the realistic operator scenario — env vars set globally and a
+    Smithery session config also supplying all four — and proves precedence
+    holds for every field in one ``_resolve_settings`` invocation. Per-field
+    isolation is provided by the parametrized companion test below.
+
+    Per the design non-goals (design.md:187-190), the warning log text is NOT
+    asserted — only the resolved tuple values. ``caplog`` assertions on the
+    warning text are a documented future addition, not a goal of this task.
+    """
+    # Env values — the values that must win. The base URL uses ``localhost``
+    # (a ``_LOCAL_HOSTS`` entry, ``server.py:75``) so ``_validate_base_url``
+    # accepts plain HTTP; the port is distinct from the session-config port so
+    # the two URLs remain distinguishable after validation.
+    monkeypatch.setattr(server, "ENV_API_KEY", "env-api-key-wins")
+    monkeypatch.setattr(server, "ENV_BASE_URL", "http://localhost:7777")
+    monkeypatch.setattr(server, "ENV_DEFAULT_USER_ID", "env-user-wins")
+    monkeypatch.setattr(server, "ENV_DEFAULT_AGENT_ID", "env-agent-wins")
+
+    # Session-config values — distinct from the env values so a leak is
+    # detectable. Every key is set so all four ``if session_* and ENV_*``
+    # conflict guards (``server.py:185,197,205,213``) fire. The session
+    # ``base_url`` uses a different localhost port so it is distinguishable
+    # from the env base URL.
+    session_config = {
+        "mem0_api_key": "session-api-key-loses",
+        "base_url": "http://localhost:8888",
+        "default_user_id": "session-user-loses",
+        "default_agent_id": "session-agent-loses",
+    }
+    ctx = _StubContext(session_config=session_config)
+
+    # ``ctx`` is a duck-typed stub (not a real ``Context``); the call is
+    # intentional, so silence mypy's structural-mismatch error.
+    api_key, default_user, default_agent, base_url = _resolve_settings(ctx)  # type: ignore[arg-type]
+
+    # Each resolved value must be the env value, NOT the session-config value.
+    assert api_key == "env-api-key-wins"
+    assert api_key != "session-api-key-loses"
+    assert default_user == "env-user-wins"
+    assert default_user != "session-user-loses"
+    assert default_agent == "env-agent-wins"
+    assert default_agent != "session-agent-loses"
+    # ``_validate_base_url`` strips a trailing slash but does not otherwise
+    # mutate a clean URL, so the env base URL is returned verbatim.
+    assert base_url == "http://localhost:7777"
+    assert base_url != "http://localhost:8888"
+
+
+@pytest.mark.parametrize(
+    ("env_attr", "session_config_key", "env_value", "session_value", "index"),
+    [
+        ("ENV_API_KEY", "mem0_api_key", "env-key-only", "sess-key-only", 0),
+        ("ENV_BASE_URL", "base_url", "http://localhost:7001", "http://localhost:7002", 3),
+        ("ENV_DEFAULT_USER_ID", "default_user_id", "env-user-only", "sess-user-only", 1),
+        ("ENV_DEFAULT_AGENT_ID", "default_agent_id", "env-agent-only", "sess-agent-only", 2),
+    ],
+    ids=["api_key", "base_url", "default_user_id", "default_agent_id"],
+)
+def test_resolve_settings_env_wins_over_session_config_per_field(
+    monkeypatch: pytest.MonkeyPatch,
+    env_attr: str,
+    session_config_key: str,
+    env_value: str,
+    session_value: str,
+    index: int,
+) -> None:
+    """For each field individually, when both env and session-config are set,
+    the env value wins for that field.
+
+    This is the per-field companion to the combined test above. Only the field
+    under test conflicts; the other three env constants are set to neutral
+    sentinels and their session-config keys are omitted, so the only
+    precedence decision under test is the one for ``env_attr``. This isolates a
+    regression that broke precedence for exactly one field (e.g. a typo in one
+    ``if session_* and ENV_*`` guard at ``server.py:185,197,205,213``) to a
+    single failing case.
+
+    ``index`` is the position of the field in the returned tuple
+    ``(api_key, default_user, default_agent, base_url)`` (``server.py:219``);
+    the assertion unpacks by index so each parametrized case checks only its
+    own field. The other tuple positions are not asserted here — they are
+    covered by the combined test and by task 4.1's env-only tests.
+
+    Per the design non-goals (design.md:187-190), the warning log text is NOT
+    asserted — only the resolved value for the field under test.
+    """
+    # Patch the env constant under test to its winning value.
+    monkeypatch.setattr(server, env_attr, env_value)
+    # Set the other three env constants to neutral sentinels so they do not
+    # interfere with the field under test (and so ``ENV_API_KEY`` is never
+    # ``None``, which would raise ``RuntimeError`` before the field under test
+    # is resolved).
+    if env_attr != "ENV_API_KEY":
+        monkeypatch.setattr(server, "ENV_API_KEY", "neutral-api-key")
+    if env_attr != "ENV_BASE_URL":
+        monkeypatch.setattr(server, "ENV_BASE_URL", "http://localhost:9999")
+    if env_attr != "ENV_DEFAULT_USER_ID":
+        monkeypatch.setattr(server, "ENV_DEFAULT_USER_ID", "neutral-user")
+    if env_attr != "ENV_DEFAULT_AGENT_ID":
+        monkeypatch.setattr(server, "ENV_DEFAULT_AGENT_ID", "neutral-agent")
+
+    # Only the field under test is present in the session config, with a value
+    # distinct from the env value so a leak is detectable.
+    session_config = {session_config_key: session_value}
+    ctx = _StubContext(session_config=session_config)
+
+    # ``ctx`` is a duck-typed stub (not a real ``Context``); the call is
+    # intentional, so silence mypy's structural-mismatch error.
+    result = _resolve_settings(ctx)  # type: ignore[arg-type]
+
+    # The resolved value at ``index`` must be the env value, not the
+    # session-config value.
+    assert result[index] == env_value
+    assert result[index] != session_value

@@ -15,15 +15,19 @@ Covers ``_validate_base_url`` (task 3.1) and ``_redact`` (task 3.2):
 - Truncates to the configured limit (default 500).
 - Leaves non-sensitive text unchanged.
 
-Tests for ``_validate_memory_id``, ``_error``, ``_int_env``, and
-``_with_default_filters`` live in tasks 3.3-3.6.
+``_validate_memory_id`` (task 3.3):
+- Accepts alphanumeric characters plus ``_`` and ``-``.
+- Rejects the empty string, slashes, spaces, and special characters.
+
+Tests for ``_error``, ``_int_env``, and ``_with_default_filters`` live in
+tasks 3.4-3.6.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from mem0_mcp_server.server import _redact, _validate_base_url
+from mem0_mcp_server.server import _redact, _validate_base_url, _validate_memory_id
 
 
 @pytest.mark.parametrize(
@@ -304,3 +308,98 @@ def test_redact_redacts_within_longer_text() -> None:
     text = f"Config: api_key={_SECRET}; done."
     expected = "Config: api_key=[REDACTED]; done."
     assert _redact(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# Tests for ``_validate_memory_id`` (task 3.3)
+# ---------------------------------------------------------------------------
+#
+# The regex is ``^[A-Za-z0-9_\-]+$``.  The empty string is rejected by the
+# ``not memory_id`` guard in ``_validate_memory_id`` (which short-circuits
+# before the regex is ever consulted), not by the ``+`` quantifier.  The
+# ``+`` quantifier is a defense-in-depth backstop that the public function
+# cannot isolate (the guard masks it); the single-char accept row below pins
+# its minimum-length boundary (exactly 1).
+
+
+@pytest.mark.parametrize(
+    "memory_id",
+    [
+        "abc123",
+        "ABC",
+        "123",
+        "mem_abc_123",
+        "mem-abc-123",
+        "a",
+        "mem_abc-123_def",
+    ],
+    ids=[
+        "alphanumeric-mixed-case",
+        "alphanumeric-uppercase-only",
+        "alphanumeric-digits-only",
+        "with-underscore",
+        "with-hyphen",
+        "single-char",
+        "with-underscore-and-hyphen",
+    ],
+)
+def test_validate_memory_id_accepts_valid_ids(memory_id: str) -> None:
+    """IDs matching ``^[A-Za-z0-9_\\-]+$`` are returned unchanged.
+
+    Covers the three character classes the spec requires: alphanumeric
+    (``abc123``, ``ABC``, ``123``), underscore (``mem_abc_123``), and hyphen
+    (``mem-abc-123``).  The ``single-char`` row (``a``) pins the ``+``
+    quantifier's minimum-length boundary (exactly one character), and the
+    ``with-underscore-and-hyphen`` row (``mem_abc-123_def``) exercises both
+    separators in a single ID.  The function returns the input verbatim — it
+    validates only, it does not normalize.
+    """
+    assert _validate_memory_id(memory_id) == memory_id
+
+
+@pytest.mark.parametrize(
+    "memory_id",
+    [
+        "",
+        "/",
+        "a/b",
+        "a\\b",
+        " ",
+        "a b",
+        "!",
+        "@",
+        "#",
+        ".",
+        ":",
+    ],
+    ids=[
+        "empty-string",
+        "single-slash",
+        "forward-slash-in-middle",
+        "backslash-in-middle",
+        "single-space",
+        "space-in-middle",
+        "exclamation",
+        "at-sign",
+        "hash",
+        "dot",
+        "colon",
+    ],
+)
+def test_validate_memory_id_rejects_invalid_ids(memory_id: str) -> None:
+    """IDs outside ``[A-Za-z0-9_\\-]`` (or the empty string) raise
+    ``ValueError``.
+
+    The empty string is rejected by the ``not memory_id`` guard in
+    ``_validate_memory_id`` (``server.py:109``), which short-circuits to
+    ``True`` before the regex is consulted — not by the ``+`` quantifier.  The
+    ``+`` quantifier is a defense-in-depth backstop, but the public function
+    cannot isolate it (the guard masks the regex's empty-string behavior), so
+    this test pins the observable contract (empty string raises) rather than
+    the internal mechanism.  Slashes (``/``, ``a/b``, ``a\\b``), spaces
+    (`` ``, ``a b``), and special characters (``!``, ``@``, ``#``, ``.``,
+    ``:``) all contain characters outside the allowed class and fail the
+    regex.  This was verified empirically before writing the assertions.
+    """
+    with pytest.raises(ValueError, match="Invalid memory_id format"):
+        _validate_memory_id(memory_id)

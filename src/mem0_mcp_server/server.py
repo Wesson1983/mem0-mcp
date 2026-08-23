@@ -34,7 +34,7 @@ try:  # Support both package and script runs.
         UpdateMemoryArgs,
     )
 except ImportError:  # pragma: no cover - fallback for script execution
-    from schemas import (  # type: ignore[no-redef,import-untyped]
+    from schemas import (  # type: ignore
         AddMemoryArgs,
         DeleteAllArgs,
         DeleteEntitiesArgs,

@@ -19,15 +19,21 @@ Covers ``_validate_base_url`` (task 3.1) and ``_redact`` (task 3.2):
 - Accepts alphanumeric characters plus ``_`` and ``-``.
 - Rejects the empty string, slashes, spaces, and special characters.
 
-Tests for ``_error``, ``_int_env``, and ``_with_default_filters`` live in
-tasks 3.4-3.6.
+``_error`` (task 3.4):
+- Returns ``{"error": code, "detail": detail}`` with no ``status`` key when
+  ``status`` is omitted or ``None``.
+- Returns ``{"error": code, "detail": detail, "status": status}`` when
+  ``status`` is provided.
+- Is a pure constructor (no mutation, no shared state).
+
+Tests for ``_int_env`` and ``_with_default_filters`` live in tasks 3.5-3.6.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from mem0_mcp_server.server import _redact, _validate_base_url, _validate_memory_id
+from mem0_mcp_server.server import _error, _redact, _validate_base_url, _validate_memory_id
 
 
 @pytest.mark.parametrize(
@@ -403,3 +409,131 @@ def test_validate_memory_id_rejects_invalid_ids(memory_id: str) -> None:
     """
     with pytest.raises(ValueError, match="Invalid memory_id format"):
         _validate_memory_id(memory_id)
+
+
+# ---------------------------------------------------------------------------
+# Tests for ``_error`` (task 3.4)
+# ---------------------------------------------------------------------------
+#
+# ``_error`` is a pure constructor: it builds a dict with ``error`` and
+# ``detail`` keys, and adds ``status`` only when it is not ``None``.  The
+# tests verify the key set explicitly (``"status" not in result`` /
+# ``"status" in result``) rather than relying solely on dict equality, so a
+# future change that accidentally injects a ``status: None`` key is caught.
+
+
+@pytest.mark.parametrize(
+    ("code", "detail"),
+    [
+        ("http_404", "not found"),
+        ("http_500", "internal server error"),
+        ("invalid_memory_id", "memory_id 'a/b' is not allowed"),
+        ("messages_missing", "either text or messages is required"),
+    ],
+    ids=[
+        "http-404",
+        "http-500",
+        "invalid-memory-id",
+        "messages-missing",
+    ],
+)
+def test_error_without_status_omits_status_key(code: str, detail: str) -> None:
+    """``_error(code, detail)`` returns ``{"error": code, "detail": detail}``
+    with no ``status`` key.
+
+    Both the dict-equality assert and an explicit ``"status" not in result``
+    guard are used: the equality assert catches any extra or wrong key, and the
+    membership guard documents the absence intent so a future change that
+    injects ``status: None`` is caught even if dict equality is later loosened.
+    """
+    result = _error(code, detail)
+    assert result == {"error": code, "detail": detail}
+    assert "status" not in result
+
+
+@pytest.mark.parametrize(
+    ("code", "detail", "status"),
+    [
+        ("http_404", "not found", 404),
+        ("http_500", "internal server error", 500),
+        ("http_401", "unauthorized", 401),
+        ("http_request_failed", "connection refused", 503),
+        # ``status=0`` is falsy but not ``None``.  The implementation uses
+        # ``if status is not None`` (``server.py:117``), so the ``status`` key
+        # is kept for ``0`` — this row pins the ``is not None`` vs ``if status``
+        # (truthiness) distinction, which is the core contract of ``_error``.
+        # A mutant that changed the guard to ``if status:`` would drop the key
+        # for ``status=0`` and fail this row (dict equality + membership).
+        ("http_0", "ok", 0),
+    ],
+    ids=[
+        "http-404",
+        "http-500",
+        "http-401",
+        "http-request-failed",
+        "status-zero-falsy-but-valid",
+    ],
+)
+def test_error_with_status_includes_status_key(
+    code: str, detail: str, status: int
+) -> None:
+    """``_error(code, detail, status=N)`` returns a dict with ``error``,
+    ``detail``, and ``status`` keys, where ``status`` equals ``N``.
+
+    The ``status`` key presence is asserted explicitly (``"status" in
+    result``) in addition to dict equality, so the intent is documented
+    independently of the full-dict comparison.  The ``status-zero-falsy-but-
+    valid`` row pins the ``if status is not None`` guard against a regression
+    to ``if status`` (truthiness), which would drop the ``status`` key for
+    ``status=0``.
+    """
+    result = _error(code, detail, status=status)
+    assert result == {"error": code, "detail": detail, "status": status}
+    assert "status" in result
+
+
+@pytest.mark.parametrize(
+    ("code", "detail"),
+    [
+        ("http_404", "not found"),
+        ("http_500", "internal server error"),
+    ],
+    ids=[
+        "http-404",
+        "http-500",
+    ],
+)
+def test_error_with_explicit_none_status_omits_status_key(
+    code: str, detail: str
+) -> None:
+    """Passing ``status=None`` explicitly behaves identically to omitting the
+    argument — no ``status`` key is present.
+
+    This pins the ``None`` side of the ``if status is not None`` branch:
+    ``None`` is the sentinel that suppresses the key, not a value that gets
+    stored.  The falsy-but-not-``None`` side (e.g. ``status=0``) is covered
+    separately in ``test_error_with_status_includes_status_key`` via the
+    ``status-zero-falsy-but-valid`` row.
+    """
+    result = _error(code, detail, status=None)
+    assert result == {"error": code, "detail": detail}
+    assert "status" not in result
+
+
+def test_error_is_pure_constructor_no_mutation() -> None:
+    """``_error`` is a pure constructor: repeated calls with the same
+    arguments return equal (but distinct) dicts, and mutating one does not
+    affect the other.
+
+    Two independent calls produce two distinct dict objects (``is not``) with
+    equal contents (``==``), confirming no shared mutable state.  Mutating the
+    first result must not change the second — this guards against a future
+    change that caches and reuses a shared dict.
+    """
+    a = _error("http_404", "not found", status=404)
+    b = _error("http_404", "not found", status=404)
+    assert a == b
+    assert a is not b
+    # Mutating one must not affect the other.
+    a["error"] = "mutated"
+    assert b["error"] == "http_404"

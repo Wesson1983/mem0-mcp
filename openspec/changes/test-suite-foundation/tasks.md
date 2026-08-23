@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add `pytest-asyncio>=0.23.0` to `[dependency-groups].dev` in `pyproject.toml` (alongside the existing `pytest>=8.3.4`, `ruff>=0.7.0`, `mypy>=1.18.2`). Pick a concrete version published at least 7 days ago. Verify `pip install -e ".[dev]"` succeeds with no resolver conflict against `pytest>=8.3.4`, `pytest --version` reports `pytest-asyncio` as a registered plugin, and `pip check` reports no broken requirements.
 - [x] 1.2 Create the `tests/` package tree first (before pointing pytest at it): `tests/__init__.py`, `tests/unit/__init__.py`, `tests/integration/__init__.py`, `tests/e2e/__init__.py`, all empty. Verify the directories exist.
-- [ ] 1.3 Add `[tool.pytest.ini_options]` to `pyproject.toml` with `asyncio_mode = "auto"`, `testpaths = ["tests"]`, and `markers = ["e2e: requires MEM0_E2E=1 plus a running container, mem0 OSS, and LM Studio"]`. Ordered after 1.2 because `testpaths` pointing at a missing directory makes pytest exit with an error, not a clean empty collection. Verify `pytest --collect-only` exits 0 collecting zero tests, and `pytest --markers` lists the `e2e` marker.
+- [x] 1.3 Add `[tool.pytest.ini_options]` to `pyproject.toml` with `asyncio_mode = "auto"`, `testpaths = ["tests"]`, and `markers = ["e2e: requires MEM0_E2E=1 plus a running container, mem0 OSS, and LM Studio"]`. Ordered after 1.2 because `testpaths` pointing at a missing directory makes pytest exit with an error, not a clean empty collection. Verify `pytest --collect-only` exits 0 collecting zero tests, and `pytest --markers` lists the `e2e` marker.
 
 ## 2. Fake HTTP server fixture
 

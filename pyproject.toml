@@ -90,3 +90,8 @@ line-length = 100
 [tool.mypy]
 python_version = "3.10"
 strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["e2e: requires MEM0_E2E=1 plus a running container, mem0 OSS, and LM Studio"]

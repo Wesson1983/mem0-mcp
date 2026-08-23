@@ -1,4 +1,4 @@
-"""Unit tests for the ``_client`` cache (task 5.1, change: test-suite-foundation).
+"""Unit tests for the ``_client`` cache and ``clear_client_cache`` (tasks 5.1/5.2).
 
 ``_client(base_url, api_key)`` (``server.py:318-327``) memoizes
 ``Mem0OSSClient`` instances in the module-level ``_CLIENT_CACHE`` dict, keyed by
@@ -14,6 +14,9 @@ Task 5.1 covers:
   inserting a third client evicts the oldest key and
   ``len(_CLIENT_CACHE)`` never exceeds the max. This avoids creating 32 real
   clients (each builds a ``requests.Session``) to exercise the bound.
+
+Task 5.2 covers ``clear_client_cache``: after clearing, subsequent ``_client``
+calls create new instances instead of returning cached ones.
 
 Cache-state isolation:
   ``_CLIENT_CACHE`` is module-level mutable state shared across the whole
@@ -279,3 +282,89 @@ def test_client_does_not_evict_when_below_max(
     # All three survive — no eviction below the max.
     assert len(_CLIENT_CACHE) == 3
     assert all(c in _CLIENT_CACHE.values() for c in (c1, c2, c3))
+
+
+# ---------------------------------------------------------------------------
+# Task 5.2 — ``clear_client_cache``
+# ---------------------------------------------------------------------------
+#
+# ``clear_client_cache`` (``server.py:330-332``) drops every cached client via
+# ``_CLIENT_CACHE.clear()``. Task 5.2 requires: after clearing, subsequent
+# ``_client`` calls create new instances instead of returning cached ones.
+# The tests below also cover the empty-cache no-op and post-clear refill,
+# which are the two regressions a broken ``clear`` could introduce (raising on
+# an empty cache, or leaving the cache unable to accept new entries).
+
+
+def test_clear_client_cache_empties_the_cache() -> None:
+    """``clear_client_cache()`` removes every cached client so
+    ``len(_CLIENT_CACHE) == 0``.
+
+    After populating the cache with two distinct clients, calling
+    ``clear_client_cache()`` must leave it empty. This is the documented
+    contract (``server.py:330-332``: ``_CLIENT_CACHE.clear()``) and the
+    foundation for the isolation fixture above.
+    """
+    _client(_BASE_A, _KEY_A)
+    _client(_BASE_B, _KEY_B)
+    assert len(_CLIENT_CACHE) == 2
+
+    clear_client_cache()
+
+    assert len(_CLIENT_CACHE) == 0
+    assert _CLIENT_CACHE == {}
+
+
+def test_clear_client_cache_subsequent_calls_create_new_instances() -> None:
+    """After clearing, a subsequent ``_client(base_url, api_key)`` call
+    constructs a new instance rather than returning the previously cached one.
+
+    This is the behavioral consequence of clearing (task 5.2's requirement):
+    the old instance is no longer reachable via the cache, so the same
+    arguments produce a cache miss and a fresh ``Mem0OSSClient``. The new
+    instance must not be the same object as the one returned before the clear
+    (``is not``).
+    """
+    before = _client(_BASE_A, _KEY_A)
+
+    clear_client_cache()
+
+    after = _client(_BASE_A, _KEY_A)
+
+    assert before is not after
+    assert isinstance(after, Mem0OSSClient)
+    # The cache holds exactly the one new instance.
+    assert len(_CLIENT_CACHE) == 1
+    assert next(iter(_CLIENT_CACHE.values())) is after
+
+
+def test_clear_client_cache_is_idempotent() -> None:
+    """Calling ``clear_client_cache()`` on an already-empty cache is a no-op
+    (no error, cache stays empty).
+
+    ``dict.clear()`` is idempotent, so the wrapper is too. This guards against
+    a regression that wrapped the clear in a conditional that raised on an
+    empty cache.
+    """
+    clear_client_cache()
+    clear_client_cache()
+
+    assert len(_CLIENT_CACHE) == 0
+
+
+def test_clear_client_cache_then_refill_works() -> None:
+    """After clearing, the cache can be refilled and resumes normal caching
+    behavior (identity holds for repeated calls).
+
+    This verifies the cache is not left in a broken state after clearing —
+    a regression that, e.g., replaced the dict object with a sentinel or
+    disabled insertion would fail here.
+    """
+    _client(_BASE_A, _KEY_A)
+    clear_client_cache()
+
+    first = _client(_BASE_A, _KEY_A)
+    second = _client(_BASE_A, _KEY_A)
+
+    assert first is second
+    assert len(_CLIENT_CACHE) == 1

@@ -27,7 +27,7 @@
 ## 5. Unit tests — client cache
 
 - [x] 5.1 Create `tests/unit/test_client_cache.py` with tests for `_client`: same `(base_url, api_key)` returns the same `Mem0OSSClient` instance (identity check with `is`); different `api_key` returns a different instance; different `base_url` returns a different instance. For eviction, monkeypatch `server._CLIENT_CACHE_MAX` to a small value (e.g. 2) instead of creating 32 real clients, then assert the oldest key is dropped and `len(_CLIENT_CACHE)` never exceeds the max. Call `clear_client_cache()` in a fixture before and after each test so cache state does not leak between tests. Verify all assertions pass.
-- [ ] 5.2 Add tests for `clear_client_cache`: clears the cache so subsequent `_client` calls create new instances. Verify all assertions pass.
+- [x] 5.2 Add tests for `clear_client_cache`: clears the cache so subsequent `_client` calls create new instances. Verify all assertions pass.
 
 ## 6. Unit tests — schemas
 
